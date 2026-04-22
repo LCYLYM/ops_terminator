@@ -1,0 +1,12 @@
+{
+  "id": "linux_host_initial_triage",
+  "title": "Linux host initial triage",
+  "description": "用于首次了解主机环境、基本健康度和运维边界。",
+  "intent_examples": ["首次排查", "先看看这台机器", "主机概况", "host probe"],
+  "risk_category": "low",
+  "recommended_investigation_flow": ["host_probe", "memory_inspect", "disk_inspect", "port_inspect"],
+  "decision_hints": ["先做只读检查", "先识别发行版和 init system", "避免一开始就重启服务"],
+  "explanation_hints": ["先讲清主机事实，再讲风险和下一步"],
+  "safer_alternatives": ["优先使用只读工具"]
+}
+

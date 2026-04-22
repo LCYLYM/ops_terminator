@@ -1,0 +1,12 @@
+{
+  "id": "disk_pressure_triage",
+  "title": "Disk pressure triage",
+  "description": "用于定位磁盘空间或 inode 压力。",
+  "intent_examples": ["磁盘满了", "df", "inode", "磁盘空间"],
+  "risk_category": "medium",
+  "recommended_investigation_flow": ["disk_inspect", "file_log_search"],
+  "decision_hints": ["先看容量和 inode，再看大目录或日志", "不要先删文件"],
+  "explanation_hints": ["分开解释容量和 inode"],
+  "safer_alternatives": ["先做日志检索和目录核查，再决定清理"]
+}
+

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ .title }}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">OS Agent Control Plane</p>
+        <h1>真实 Linux 运维闭环</h1>
+        <p class="lede">统一 gateway、真实 LongCat agent loop、审批、事件流、本地/SSH 执行。页面只接控制面，不自己执行命令。</p>
+      </div>
+      <div class="status-card">
+        <div class="status-dot"></div>
+        <div>
+          <strong>Gateway</strong>
+          <span id="health">Checking...</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Hosts</h2>
+        <form id="host-form" class="stack">
+          <input name="id" placeholder="host id">
+          <input name="display_name" placeholder="display name">
+          <select name="mode">
+            <option value="local">local</option>
+            <option value="ssh">ssh</option>
+          </select>
+          <input name="address" placeholder="ssh address">
+          <input name="port" placeholder="22">
+          <input name="user" placeholder="ssh user">
+          <input name="password_env" placeholder="password env var">
+          <button type="submit">Add Host</button>
+        </form>
+        <div id="hosts" class="list"></div>
+      </article>
+
+      <article class="panel">
+        <h2>Run</h2>
+        <form id="run-form" class="stack">
+          <select id="run-host" name="host_id"></select>
+          <textarea name="user_input" rows="6" placeholder="例如：请检查 80 端口占用，并判断是否需要重启 nginx"></textarea>
+          <button type="submit">Start Run</button>
+        </form>
+        <div id="approvals" class="list"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Live Events</h2>
+        <div id="run-badge">No run</div>
+      </div>
+      <pre id="events" class="events"></pre>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
+
