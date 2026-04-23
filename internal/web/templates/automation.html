@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html class="light" lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>自动化工作流 - 运维控制台</title>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+  <script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "tertiary-fixed": "#89f4f4","secondary": "#5f5f56","on-surface-variant": "#56423c","surface-bright": "#fcf9f5","error": "#ba1a1a","secondary-fixed": "#e5e3d8","primary-fixed": "#ffdbd0","on-tertiary": "#ffffff","on-tertiary-container": "#f3fffe","surface-tint": "#9d4324","surface-container": "#f0edea","outline": "#89726b","inverse-primary": "#ffb59d","tertiary-container": "#008283","on-secondary-container": "#65655c","on-error-container": "#93000a","background": "#fcf9f5","on-primary-fixed-variant": "#7e2c0e","on-primary-fixed": "#390b00","secondary-container": "#e5e3d8","on-surface": "#1c1c1a","on-background": "#1c1c1a","surface-container-high": "#eae8e4","surface-container-lowest": "#ffffff","primary-container": "#b95837","error-container": "#ffdad6","surface-variant": "#e5e2df","surface-dim": "#dcdad6","on-secondary-fixed": "#1c1c15","tertiary-fixed-dim": "#6cd7d8","on-secondary": "#ffffff","surface": "#fcf9f5","on-error": "#ffffff","tertiary": "#006768","surface-container-highest": "#e5e2df","on-primary": "#ffffff","secondary-fixed-dim": "#c8c7bc","on-tertiary-fixed": "#002020","primary": "#9a4021","on-tertiary-fixed-variant": "#004f50","primary-fixed-dim": "#ffb59d","on-primary-container": "#fffbff","inverse-on-surface": "#f3f0ed","inverse-surface": "#31302e","outline-variant": "#dcc1b8","surface-container-low": "#f6f3f0","on-secondary-fixed-variant": "#47473f"
+          }
+        }
+      }
+    }
+  </script>
+  <link href="/static/app.css" rel="stylesheet"/>
+</head>
+<body class="bg-[#F5F4ED] dark:bg-stone-950 font-body-md text-on-surface flex min-h-screen" data-page="automation">
+  <nav class="fixed left-0 top-0 h-full flex flex-col p-4 w-64 border-r border-[#E2E2DB] dark:border-stone-800 bg-[#F5F4ED] dark:bg-stone-950 z-50">
+    <div class="mb-12 px-4 flex items-center gap-3">
+      <div class="w-8 h-8 bg-primary rounded-lg flex items-center justify-center text-on-primary">
+        <span class="material-symbols-outlined text-[20px]">terminal</span>
+      </div>
+      <div><h1 class="text-lg font-bold text-stone-900 dark:text-stone-100 tracking-tight font-h2">运维控制台</h1><p class="text-xs text-stone-500 font-label">静谧的智慧</p></div>
+    </div>
+    <ul class="flex flex-col gap-2 flex-grow">
+      <li><a class="flex items-center gap-3 px-4 py-3 rounded-lg text-stone-600 dark:text-stone-400 hover:bg-[#E6E4D9]/50 transition-colors font-manrope text-sm tracking-tight" href="/assets"><span class="material-symbols-outlined">dns</span><span>资产管理</span></a></li>
+      <li><a class="flex items-center gap-3 px-4 py-3 text-[#C96442] dark:text-orange-400 font-semibold bg-[#E6E4D9] dark:bg-stone-800 rounded-lg font-manrope text-sm tracking-tight" href="/automation"><span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">bolt</span><span>自动化中心</span></a></li>
+      <li><a class="flex items-center gap-3 px-4 py-3 rounded-lg text-stone-600 dark:text-stone-400 hover:bg-[#E6E4D9]/50 transition-colors font-manrope text-sm tracking-tight" href="/settings"><span class="material-symbols-outlined">settings</span><span>系统设置</span></a></li>
+      <li><a class="flex items-center gap-3 px-4 py-3 rounded-lg text-stone-600 dark:text-stone-400 hover:bg-[#E6E4D9]/50 transition-colors font-manrope text-sm tracking-tight" href="/"><span class="material-symbols-outlined">chat</span><span>对话历史</span></a></li>
+    </ul>
+  </nav>
+  <div class="ml-64 flex-1 flex flex-col min-h-screen">
+    <header class="docked full-width top-0 sticky z-40 bg-white/80 dark:bg-stone-900/80 backdrop-blur-sm border-b border-[#E2E2DB] dark:border-stone-800 flex justify-between items-center px-6 py-3 transition-all duration-300">
+      <div class="flex items-center gap-4">
+        <div class="relative"><span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 text-[20px]">search</span><input class="pl-10 pr-4 py-2 w-64 bg-surface-container-low border border-[#E2E2DB] rounded-lg font-body-sm text-on-surface" placeholder="搜索资源、任务或主机..." type="text"/></div>
+      </div>
+      <div class="flex items-center gap-4"><button class="text-stone-500 transition-colors"><span class="material-symbols-outlined">notifications</span></button><button class="text-stone-500 transition-colors"><span class="material-symbols-outlined">help_outline</span></button></div>
+    </header>
+    <main class="p-8 lg:p-12 max-w-[1200px] mx-auto w-full">
+      <div class="mb-10 flex justify-between items-end">
+        <div><h2 class="font-h1 text-h1 text-on-surface mb-2">自动化执行记录</h2><p class="font-body-md text-body-md text-secondary max-w-2xl">监控和管理所有自动化工作流的执行状态、主机关联及最终结果报告。</p></div>
+        <div class="flex gap-3">
+          <button class="bg-white border border-[#E2E2DB] text-[#262624] px-4 py-2 rounded-lg font-label flex items-center gap-2 hover:bg-surface-container-low transition-colors" type="button"><span class="material-symbols-outlined text-[18px]">filter_list</span>过滤条件</button>
+          <a class="bg-[#C96442] text-white px-5 py-2 rounded-lg font-label flex items-center gap-2 hover:bg-[#b95837] transition-colors" href="/"><span class="material-symbols-outlined text-[18px]">play_arrow</span>新建执行</a>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+        <div class="bg-surface-container-lowest border border-[#E2E2DB] rounded-xl p-6"><div class="flex justify-between items-start mb-4"><div class="w-10 h-10 rounded-full bg-surface-container flex items-center justify-center text-primary"><span class="material-symbols-outlined">check_circle</span></div><span class="font-label text-tertiary-container bg-tertiary-container/10 px-2 py-1 rounded">今日成功率</span></div><div class="flex items-baseline gap-2"><span class="font-h1 text-h1 text-on-surface" id="automation-success-rate">--</span><span class="font-body-sm text-secondary" id="automation-success-meta">/ --</span></div></div>
+        <div class="bg-surface-container-lowest border border-[#E2E2DB] rounded-xl p-6"><div class="flex justify-between items-start mb-4"><div class="w-10 h-10 rounded-full bg-surface-container flex items-center justify-center text-primary"><span class="material-symbols-outlined">autorenew</span></div><span class="font-label text-primary-container bg-primary-container/10 px-2 py-1 rounded">运行中任务</span></div><div class="flex items-baseline gap-2"><span class="font-h1 text-h1 text-on-surface" id="automation-running-count">0</span><span class="font-body-sm text-secondary">个活跃流</span></div></div>
+        <div class="bg-surface-container-lowest border border-[#E2E2DB] rounded-xl p-6"><div class="flex justify-between items-start mb-4"><div class="w-10 h-10 rounded-full bg-error-container flex items-center justify-center text-error"><span class="material-symbols-outlined">error</span></div><span class="font-label text-error bg-error/10 px-2 py-1 rounded">异常警告</span></div><div class="flex items-baseline gap-2"><span class="font-h1 text-h1 text-error" id="automation-failed-count">0</span><span class="font-body-sm text-secondary">需干预</span></div></div>
+      </div>
+      <div class="bg-surface-container-lowest border border-[#E2E2DB] rounded-xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-[#E2E2DB] flex justify-between items-center bg-surface-bright"><h3 class="font-h3 text-h3 text-on-surface text-lg">近期执行历史 (Runs)</h3><div class="flex gap-2"><span class="font-label text-secondary px-3 py-1 bg-surface-container rounded-full text-xs" id="automation-run-total">全部 (0)</span></div></div>
+        <div class="divide-y divide-[#E2E2DB]" id="automation-run-list"></div>
+      </div>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

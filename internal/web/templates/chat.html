@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>运维控制台 - 对话</title>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+  <script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "secondary": "#5f5f56",
+            "primary": "#9a4021",
+            "on-surface-variant": "#56423c",
+            "on-secondary-fixed": "#1c1c15",
+            "surface-variant": "#e5e2df",
+            "primary-fixed-dim": "#ffb59d",
+            "outline": "#89726b",
+            "surface-dim": "#dcdad6",
+            "on-primary-container": "#fffbff",
+            "surface-container-low": "#f6f3f0",
+            "surface": "#fcf9f5",
+            "on-primary-fixed-variant": "#7e2c0e",
+            "secondary-container": "#e5e3d8",
+            "error-container": "#ffdad6",
+            "on-tertiary-fixed": "#002020",
+            "error": "#ba1a1a",
+            "secondary-fixed-dim": "#c8c7bc",
+            "tertiary-fixed": "#89f4f4",
+            "surface-bright": "#fcf9f5",
+            "inverse-on-surface": "#f3f0ed",
+            "on-surface": "#1c1c1a",
+            "primary-container": "#b95837",
+            "tertiary-container": "#008283",
+            "on-primary-fixed": "#390b00",
+            "on-background": "#1c1c1a",
+            "surface-container-highest": "#e5e2df",
+            "on-tertiary-container": "#f3fffe",
+            "on-error": "#ffffff",
+            "inverse-surface": "#31302e",
+            "surface-container-lowest": "#ffffff",
+            "primary-fixed": "#ffdbd0",
+            "on-secondary": "#ffffff",
+            "on-error-container": "#93000a",
+            "on-secondary-container": "#65655c",
+            "secondary-fixed": "#e5e3d8",
+            "on-secondary-fixed-variant": "#47473f",
+            "surface-container-high": "#eae8e4",
+            "outline-variant": "#dcc1b8",
+            "tertiary-fixed-dim": "#6cd7d8",
+            "on-tertiary": "#ffffff",
+            "on-primary": "#ffffff",
+            "surface-container": "#f0edea",
+            "tertiary": "#006768",
+            "surface-tint": "#9d4324",
+            "inverse-primary": "#ffb59d",
+            "background": "#fcf9f5",
+            "on-tertiary-fixed-variant": "#004f50"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          "spacing": {
+            "lg": "24px",
+            "sm": "8px",
+            "gutter": "24px",
+            "md": "16px",
+            "xl": "40px",
+            "unit": "4px",
+            "container-max": "1120px",
+            "xs": "4px",
+            "2xl": "64px"
+          },
+          "fontFamily": {
+            "body-md": ["Inter"],
+            "h1": ["Manrope"],
+            "label": ["Inter"],
+            "h2": ["Manrope"],
+            "body-lg": ["Inter"],
+            "h3": ["Manrope"],
+            "body-sm": ["Inter"]
+          },
+          "fontSize": {
+            "body-md": ["16px", {"lineHeight": "1.6", "fontWeight": "400"}],
+            "h1": ["40px", {"lineHeight": "1.2", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+            "label": ["13px", {"lineHeight": "1.2", "letterSpacing": "0.05em", "fontWeight": "500"}],
+            "h2": ["32px", {"lineHeight": "1.3", "fontWeight": "600"}],
+            "body-lg": ["18px", {"lineHeight": "1.7", "fontWeight": "400"}],
+            "h3": ["24px", {"lineHeight": "1.4", "fontWeight": "500"}],
+            "body-sm": ["14px", {"lineHeight": "1.5", "fontWeight": "400"}]
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { background-color: #F5F4ED; }
+  </style>
+  <link href="/static/app.css" rel="stylesheet"/>
+</head>
+<body class="text-on-surface font-body-md text-body-md antialiased overflow-hidden" data-page="chat">
+  <aside class="fixed left-0 top-0 h-full flex flex-col p-6 bg-[#F5F4ED] dark:bg-stone-950 text-[#C96442] dark:text-[#D97D5D] font-['Manrope'] text-sm antialiased h-screen w-64 border-r border-[#E2E2DB] dark:border-stone-800 z-20">
+    <div class="flex items-center gap-sm mb-xl">
+      <div class="w-8 h-8 rounded-full bg-primary-container text-on-primary-container flex items-center justify-center shrink-0">
+        <span class="material-symbols-outlined text-[18px]">admin_panel_settings</span>
+      </div>
+      <div>
+        <div class="text-lg font-bold text-[#262624] dark:text-stone-100 leading-tight">运维控制台</div>
+        <div class="text-xs text-[#5C5C59] mt-0.5">静谧的智慧</div>
+      </div>
+    </div>
+    <button class="w-full bg-[#C96442] text-white rounded-lg py-2.5 mb-8 flex items-center justify-center gap-sm hover:opacity-90 transition-all shadow-sm" id="new-session-button" type="button">
+      <span class="material-symbols-outlined text-[18px]">add</span>
+      <span class="font-medium">新建会话</span>
+    </button>
+    <nav class="flex-1 flex flex-col gap-1">
+      <a class="flex items-center gap-md px-3 py-2.5 rounded-md bg-white dark:bg-stone-900 text-[#C96442] font-semibold border-r-2 border-[#C96442] hover:bg-[#E6E4D9] dark:hover:bg-stone-800 transition-colors duration-200" href="/">
+        <span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 1;">chat</span>
+        <span>对话历史</span>
+      </a>
+      <a class="flex items-center gap-md px-3 py-2.5 rounded-md text-[#5C5C59] dark:text-stone-400 hover:text-[#262624] hover:bg-[#E6E4D9] dark:hover:bg-stone-800 transition-colors duration-200" href="/assets">
+        <span class="material-symbols-outlined text-[20px]">inventory_2</span>
+        <span>资产管理</span>
+      </a>
+      <a class="flex items-center gap-md px-3 py-2.5 rounded-md text-[#5C5C59] dark:text-stone-400 hover:text-[#262624] hover:bg-[#E6E4D9] dark:hover:bg-stone-800 transition-colors duration-200" href="/automation">
+        <span class="material-symbols-outlined text-[20px]">robot_2</span>
+        <span>自动化工作流</span>
+      </a>
+      <a class="flex items-center gap-md px-3 py-2.5 rounded-md text-[#5C5C59] dark:text-stone-400 hover:text-[#262624] hover:bg-[#E6E4D9] dark:hover:bg-stone-800 transition-colors duration-200" href="/settings">
+        <span class="material-symbols-outlined text-[20px]">settings</span>
+        <span>系统设置</span>
+      </a>
+    </nav>
+    <div class="mt-auto pt-6 border-t border-[#E2E2DB] flex flex-col gap-1">
+      <a class="flex items-center gap-md px-3 py-2 rounded-md text-[#5C5C59] hover:text-[#262624] hover:bg-[#E6E4D9] transition-colors duration-200" href="#">
+        <span class="material-symbols-outlined text-[18px]">menu_book</span>
+        <span>文档中心</span>
+      </a>
+      <a class="flex items-center gap-md px-3 py-2 rounded-md text-[#5C5C59] hover:text-[#262624] hover:bg-[#E6E4D9] transition-colors duration-200" href="#">
+        <span class="material-symbols-outlined text-[18px]">help_outline</span>
+        <span>系统支持</span>
+      </a>
+    </div>
+  </aside>
+
+  <header class="flex justify-between items-center px-12 ml-64 bg-[#F5F4ED]/80 dark:bg-stone-950/80 backdrop-blur-md text-[#C96442] dark:text-[#D97D5D] font-['Manrope'] tracking-tight w-[calc(100%-16rem)] h-16 border-b border-[#E2E2DB] dark:border-stone-800 fixed top-0 z-10">
+    <div class="text-xl font-black text-[#262624] dark:text-stone-100">控制台概览</div>
+    <nav class="flex gap-lg items-center">
+      <a class="text-[#5C5C59] dark:text-stone-400 hover:text-[#262624] dark:hover:text-stone-200 transition-colors text-sm font-medium" href="/automation">仪表盘</a>
+      <a class="text-[#5C5C59] dark:text-stone-400 hover:text-[#262624] dark:hover:text-stone-200 transition-colors text-sm font-medium" href="/automation">监控</a>
+      <a class="text-[#5C5C59] dark:text-stone-400 hover:text-[#262624] dark:hover:text-stone-200 transition-colors text-sm font-medium" href="/automation">日志</a>
+    </nav>
+    <div class="flex items-center gap-md">
+      <button class="text-[#5C5C59] hover:text-[#262624] hover:scale-98 transition-transform">
+        <span class="material-symbols-outlined">notifications</span>
+      </button>
+      <button class="text-[#5C5C59] hover:text-[#262624] hover:scale-98 transition-transform">
+        <span class="material-symbols-outlined">account_circle</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="ml-64 pt-16 h-screen flex w-[calc(100%-16rem)]">
+    <section class="flex-1 flex flex-col relative h-full">
+      <div class="flex-1 overflow-y-auto px-lg py-xl flex justify-center">
+        <div class="w-full max-w-[800px] flex flex-col gap-xl" id="chat-history"></div>
+      </div>
+      <div class="p-lg pb-xl flex justify-center bg-gradient-to-t from-[#F5F4ED] via-[#F5F4ED] to-transparent shrink-0">
+        <div class="w-full max-w-[800px]">
+          <form class="relative bg-surface-container-lowest border border-[#E2E2DB] rounded-xl shadow-sm focus-within:border-[#C96442] focus-within:ring-1 focus-within:ring-[#C96442] transition-all" id="chat-form">
+            <textarea class="w-full bg-transparent border-none rounded-xl pl-md pr-16 py-md font-body-md text-body-md text-on-surface placeholder:text-outline-variant resize-none focus:ring-0" id="chat-input" placeholder="输入运维指令或问题..." rows="1"></textarea>
+            <button class="absolute right-sm bottom-sm p-2 bg-[#F5F4ED] hover:bg-[#E6E4D9] text-[#C96442] rounded-lg transition-colors flex items-center justify-center" type="submit">
+              <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">send</span>
+            </button>
+          </form>
+          <div class="text-center mt-sm">
+            <span class="font-body-sm text-body-sm text-outline">AI 助手可能会犯错，请在执行危险操作前核对信息。</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="w-80 border-l border-[#E2E2DB] bg-[#Fcf9f5] flex flex-col shrink-0">
+      <div class="p-lg border-b border-[#E2E2DB]">
+        <h3 class="font-h3 text-h3 text-on-surface mb-xs">系统概览</h3>
+        <p class="font-body-sm text-body-sm text-secondary">实时环境状态监控</p>
+      </div>
+      <div class="flex-1 overflow-y-auto p-lg flex flex-col gap-lg">
+        <div>
+          <div class="flex items-center justify-between mb-sm">
+            <span class="font-label text-label text-secondary uppercase tracking-wider">网关健康度</span>
+            <span class="flex items-center gap-xs font-body-sm text-body-sm text-tertiary-container" id="gateway-health-text">
+              <span class="w-2 h-2 rounded-full bg-tertiary-container"></span>
+              正常
+            </span>
+          </div>
+          <div class="bg-surface-container-lowest border border-[#E2E2DB] rounded-lg p-sm flex items-center justify-between">
+            <div class="flex items-center gap-sm">
+              <span class="material-symbols-outlined text-outline">router</span>
+              <span class="font-body-sm text-body-sm text-on-surface">API Gateway Pro</span>
+            </div>
+            <span class="font-mono text-xs text-secondary" id="gateway-health-meta">warming...</span>
+          </div>
+        </div>
+        <div>
+          <div class="flex items-center justify-between mb-sm">
+            <span class="font-label text-label text-secondary uppercase tracking-wider">待处理任务</span>
+            <span class="bg-[#E6E4D9] text-[#C96442] px-2 py-0.5 rounded-full font-label text-[11px]" id="approval-count">0 项</span>
+          </div>
+          <ul class="flex flex-col gap-unit" id="approval-list"></ul>
+        </div>
+      </div>
+    </aside>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

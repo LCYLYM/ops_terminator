@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>系统设置 - 运维控制台</title>
+  <link href="https://fonts.googleapis.com" rel="preconnect"/>
+  <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: { extend: { colors: { "surface": "#fcf9f5", "surface-variant": "#e5e2df", "surface-container-lowest": "#ffffff", "surface-container-low": "#f6f3f0", "surface-container": "#f0edea", "on-surface": "#1c1c1a", "on-surface-variant": "#56423c", "secondary": "#5f5f56", "primary": "#9a4021", "primary-container": "#b95837", "tertiary-container": "#008283", "error": "#ba1a1a", "surface-tint": "#9d4324" } } }
+    }
+  </script>
+  <link href="/static/app.css" rel="stylesheet"/>
+</head>
+<body class="bg-background text-on-background min-h-screen font-body-md antialiased selection:bg-primary-container selection:text-on-primary-container" data-page="settings">
+  <nav class="fixed left-0 top-0 h-full flex flex-col p-4 h-screen w-64 border-r border-[#E2E2DB] dark:border-stone-800 bg-[#F5F4ED] dark:bg-stone-950 z-50">
+    <div class="mb-8 px-4 mt-2"><h1 class="text-lg font-bold text-stone-900 dark:text-stone-100 font-manrope tracking-tight">运维控制台</h1><p class="text-xs text-stone-500 mt-1 font-manrope tracking-tight">静谧的智慧</p></div>
+    <ul class="flex-1 space-y-2 font-manrope text-sm tracking-tight">
+      <li><a class="flex items-center gap-3 px-4 py-3 rounded-lg text-stone-600 hover:bg-[#E6E4D9]/50 transition-colors" href="/assets"><span class="material-symbols-outlined text-lg">dns</span><span>资产管理</span></a></li>
+      <li><a class="flex items-center gap-3 px-4 py-3 rounded-lg text-stone-600 hover:bg-[#E6E4D9]/50 transition-colors" href="/automation"><span class="material-symbols-outlined text-lg">bolt</span><span>自动化中心</span></a></li>
+      <li><a class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#C96442] font-semibold bg-[#E6E4D9] scale-95 duration-200" href="/settings"><span class="material-symbols-outlined text-lg" style="font-variation-settings: 'FILL' 1;">settings</span><span>系统设置</span></a></li>
+      <li><a class="flex items-center gap-3 px-4 py-3 rounded-lg text-stone-600 hover:bg-[#E6E4D9]/50 transition-colors" href="/"><span class="material-symbols-outlined text-lg">chat</span><span>对话历史</span></a></li>
+    </ul>
+  </nav>
+  <header class="flex justify-between items-center px-6 py-3 ml-64 docked full-width top-0 sticky z-40 bg-white/80 dark:bg-stone-900/80 backdrop-blur-sm border-b border-[#E2E2DB] dark:border-stone-800 transition-all duration-300">
+    <div class="flex items-center gap-4"><div class="relative group hidden md:block"><span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 text-sm">search</span><input class="pl-9 pr-4 py-1.5 bg-surface-container-lowest border border-[#E2E2DB] rounded-full text-sm w-64 placeholder:text-stone-400 text-stone-700 bg-transparent" placeholder="搜索..." type="text"/></div><span class="font-manrope text-base text-[#C96442] hidden md:block">运维控制台</span></div>
+    <div class="flex items-center gap-2"><button class="p-2 rounded-full text-stone-500 hover:bg-[#E6E4D9]/50 transition-colors"><span class="material-symbols-outlined">notifications</span></button><button class="p-2 rounded-full text-stone-500 hover:bg-[#E6E4D9]/50 transition-colors"><span class="material-symbols-outlined">help_outline</span></button><button class="p-2 rounded-full text-stone-500 hover:bg-[#E6E4D9]/50 transition-colors"><span class="material-symbols-outlined">account_circle</span></button></div>
+  </header>
+  <main class="ml-64 p-gutter lg:p-xl xl:p-2xl min-h-[calc(100vh-65px)] flex flex-col items-center">
+    <div class="w-full max-w-container-max space-y-xl">
+      <header class="flex flex-col gap-sm">
+        <h2 class="font-h2 text-h2 text-on-surface">系统设置</h2>
+        <p class="font-body-md text-body-md text-on-surface-variant">管理平台核心组件、接口授权与全局运行策略。</p>
+      </header>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-lg">
+        <section class="bg-surface-container-lowest border border-surface-variant rounded-xl p-lg flex flex-col gap-lg">
+          <div class="flex items-center justify-between border-b border-surface-variant pb-md"><h3 class="font-h3 text-h3 text-on-surface">组件状态</h3><span class="material-symbols-outlined text-on-surface-variant">monitor_heart</span></div>
+          <div class="flex flex-col gap-md">
+            <div class="flex items-center justify-between p-md bg-surface rounded-lg border border-surface-variant/50"><div class="flex items-center gap-sm"><span class="material-symbols-outlined text-secondary">router</span><span class="font-label text-label text-on-surface">Gateway 节点</span></div><div class="flex items-center gap-xs"><span class="w-2 h-2 rounded-full bg-tertiary-container shadow-[0_0_8px_rgba(0,130,131,0.4)]"></span><span class="font-body-sm text-body-sm text-on-surface-variant ml-2" id="settings-gateway-status">健康运行</span></div></div>
+            <div class="flex items-center justify-between p-md bg-surface rounded-lg border border-surface-variant/50"><div class="flex items-center gap-sm"><span class="material-symbols-outlined text-secondary">shield</span><span class="font-label text-label text-on-surface">执行策略</span></div><div class="flex items-center gap-xs"><span class="font-body-sm text-body-sm text-on-surface-variant ml-2" id="settings-policy-summary">加载中...</span></div></div>
+          </div>
+        </section>
+        <section class="bg-surface-container-lowest border border-surface-variant rounded-xl p-lg flex flex-col gap-lg">
+          <div class="flex items-center justify-between border-b border-surface-variant pb-md"><h3 class="font-h3 text-h3 text-on-surface">运行配置</h3><span class="material-symbols-outlined text-on-surface-variant">rule</span></div>
+          <div class="flex flex-col gap-md">
+            <div class="flex items-center justify-between"><div class="flex flex-col gap-xs"><span class="font-label text-label text-on-surface">默认模型</span><span class="font-body-sm text-body-sm text-on-surface-variant" id="settings-model">LongCat</span></div></div>
+            <div class="flex items-center justify-between mt-sm"><div class="flex flex-col gap-xs"><span class="font-label text-label text-on-surface">当前 hosts</span><span class="font-body-sm text-body-sm text-on-surface-variant" id="settings-host-count">0</span></div><div class="flex flex-col gap-xs"><span class="font-label text-label text-on-surface">累计 runs</span><span class="font-body-sm text-body-sm text-on-surface-variant" id="settings-run-count">0</span></div></div>
+          </div>
+        </section>
+        <section class="bg-surface-container-lowest border border-surface-variant rounded-xl p-lg flex flex-col gap-lg md:col-span-2">
+          <div class="flex items-center justify-between border-b border-surface-variant pb-md"><div class="flex flex-col gap-xs"><h3 class="font-h3 text-h3 text-on-surface">能力与边界</h3><p class="font-body-sm text-body-sm text-on-surface-variant">当前控制面的 Linux 运维能力与安全边界说明。</p></div></div>
+          <div class="overflow-x-auto">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4" id="settings-capabilities"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
