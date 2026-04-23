@@ -17,7 +17,7 @@ import (
 )
 
 type Runtime interface {
-	Execute(context.Context, models.Run, models.Host, models.ContextSnapshot, string) (string, []string, []models.PolicyRule, error)
+	Execute(context.Context, models.Run, models.Host, models.ConversationContext) (models.ExecutionResult, error)
 }
 
 type Service struct {
@@ -142,6 +142,12 @@ func (s *Service) UpdateGatewayConfig(next models.GatewayConfig) (models.Gateway
 		s.llmClient.UpdateConfig(activePreset.BaseURL, activePreset.APIKey, activePreset.Model)
 	}
 	return buildGatewayConfigView(validated), nil
+}
+
+func (s *Service) currentRuntimeSettings() models.RuntimeSettings {
+	s.settingsMu.RLock()
+	defer s.settingsMu.RUnlock()
+	return normalizeRuntimeSettings(s.gatewayConfig.RuntimeSettings)
 }
 
 func (s *Service) ListHosts() ([]models.HostView, error) {
@@ -285,6 +291,10 @@ func (s *Service) ListSessions() ([]models.SessionView, error) {
 }
 
 func (s *Service) UpsertHost(host models.Host) (models.Host, error) {
+	host = normalizeHost(host)
+	if err := validateHost(host); err != nil {
+		return models.Host{}, err
+	}
 	now := time.Now().UTC()
 	existing, found, err := s.store.GetHost(host.ID)
 	if err != nil {
@@ -302,6 +312,9 @@ func (s *Service) UpsertHost(host models.Host) (models.Host, error) {
 	if host.Mode == "" {
 		host.Mode = models.HostModeLocal
 	}
+	if host.Mode == models.HostModeSSH && host.Port == 0 {
+		host.Port = 22
+	}
 	return host, s.store.SaveHost(host)
 }
 
@@ -317,6 +330,11 @@ func (s *Service) CreateRun(ctx context.Context, request RunRequest) (models.Run
 	if err != nil {
 		return models.Run{}, err
 	}
+	settings := s.currentRuntimeSettings()
+	session.Memory, err = s.builder.EnsureHostProfile(ctx, host, session.Memory, settings)
+	if err != nil {
+		return models.Run{}, err
+	}
 	snapshot := s.builder.Build(host, session, request.UserInput)
 	now := time.Now().UTC()
 
@@ -326,6 +344,7 @@ func (s *Service) CreateRun(ctx context.Context, request RunRequest) (models.Run
 		HostID:          host.ID,
 		UserInput:       request.UserInput,
 		ContextSnapshot: snapshot,
+		Messages:        []models.ChatMessage{{Role: "user", Content: request.UserInput}},
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -465,7 +484,7 @@ func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error
 			Approvals:       approvalsByRun[turn.RunID],
 			ToolEvents:      filterTraceEvents(runEvents),
 			AssistantText:   deriveAssistantText(run, turn, runEvents),
-			ConsoleOutput:   collectConsoleOutput(runEvents),
+			ConsoleOutput:   collectToolResultOutput(turn.ToolResults, runEvents),
 			LastEventAt:     latestEventTimestamp(runEvents),
 			WaitingApproval: hasPendingApproval(approvalsByRun[turn.RunID]),
 		})
@@ -481,6 +500,7 @@ func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error
 	return models.SessionDetail{
 		Session:          session,
 		Host:             host,
+		Memory:           session.Memory,
 		Turns:            items,
 		PendingApprovals: pendingApprovals,
 	}, true, nil
@@ -519,9 +539,29 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 	run.UpdatedAt = time.Now().UTC()
 	_ = s.store.SaveRun(run)
 
-	finalText, toolHistory, policyHistory, execErr := s.runtime.Execute(ctx, run, host, turn.ContextSnapshot, turn.UserInput)
-	run.ToolHistory = toolHistory
-	run.PolicyHistory = policyHistory
+	allTurns, err := s.store.ListTurns()
+	if err != nil {
+		return
+	}
+	historyTurns := make([]models.Turn, 0, len(session.TurnIDs))
+	for _, item := range allTurns {
+		if item.SessionID != session.ID || item.ID == turn.ID {
+			continue
+		}
+		historyTurns = append(historyTurns, item)
+	}
+	sort.Slice(historyTurns, func(i, j int) bool {
+		return historyTurns[i].CreatedAt.Before(historyTurns[j].CreatedAt)
+	})
+
+	execResult, execErr := s.runtime.Execute(ctx, run, host, models.ConversationContext{
+		Session:         session,
+		CurrentTurn:     turn,
+		HistoricalTurns: historyTurns,
+		RuntimeSettings: s.currentRuntimeSettings(),
+	})
+	run.ToolHistory = execResult.ToolHistory
+	run.PolicyHistory = execResult.PolicyHistory
 	run.UpdatedAt = time.Now().UTC()
 
 	if execErr != nil {
@@ -543,13 +583,17 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 
 	now := time.Now().UTC()
 	run.Status = models.RunStatusCompleted
-	run.FinalResponse = finalText
+	run.FinalResponse = execResult.FinalResponse
 	run.CompletedAt = &now
 	run.UpdatedAt = now
-	turn.FinalExplanation = finalText
+	turn.FinalExplanation = execResult.FinalResponse
+	turn.Messages = execResult.Messages
+	turn.ToolResults = execResult.ToolResults
+	turn.PromptStats = execResult.PromptStats
 	turn.UpdatedAt = now
-	session.LastOutcome = finalText
-	session.Summary = summarizeSession(session, turn.UserInput, finalText)
+	session.LastOutcome = execResult.FinalResponse
+	session.Memory = execResult.Memory
+	session.Summary = summarizeSession(session, turn, execResult.FinalResponse)
 	session.UpdatedAt = now
 	_ = s.store.SaveRun(run)
 	_ = s.store.SaveTurn(turn)
@@ -558,14 +602,14 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 		ID:        models.NewID("audit"),
 		RunID:     run.ID,
 		Kind:      "run_completed",
-		Summary:   finalText,
+		Summary:   execResult.FinalResponse,
 		CreatedAt: now,
 	})
 	_ = s.RecordEvent(models.Event{
 		ID:        models.NewID("event"),
 		RunID:     run.ID,
 		Type:      "run.completed",
-		Message:   finalText,
+		Message:   execResult.FinalResponse,
 		Timestamp: now,
 	})
 }
@@ -577,6 +621,9 @@ func (s *Service) ensureSession(host models.Host, sessionID, userInput string) (
 			return models.Session{}, err
 		}
 		if found {
+			if session.HostID != "" && session.HostID != host.ID {
+				return models.Session{}, fmt.Errorf("session %s belongs to host %s, not %s", session.ID, session.HostID, host.ID)
+			}
 			return session, nil
 		}
 	}
@@ -591,8 +638,68 @@ func (s *Service) ensureSession(host models.Host, sessionID, userInput string) (
 	return session, s.store.SaveSession(session)
 }
 
-func summarizeSession(session models.Session, input, outcome string) string {
-	return fmt.Sprintf("Last request: %s\nLast outcome: %s", input, outcome)
+func normalizeHost(host models.Host) models.Host {
+	host.ID = strings.TrimSpace(host.ID)
+	host.DisplayName = strings.TrimSpace(host.DisplayName)
+	host.Mode = strings.TrimSpace(host.Mode)
+	host.Address = strings.TrimSpace(host.Address)
+	host.User = strings.TrimSpace(host.User)
+	host.PasswordEnv = strings.TrimSpace(host.PasswordEnv)
+	return host
+}
+
+func validateHost(host models.Host) error {
+	if host.ID == "" {
+		return fmt.Errorf("host id is required")
+	}
+	switch host.Mode {
+	case "", models.HostModeLocal:
+		return nil
+	case models.HostModeSSH:
+		if host.Address == "" {
+			return fmt.Errorf("ssh host requires address")
+		}
+		if host.User == "" {
+			return fmt.Errorf("ssh host requires user")
+		}
+		if host.PasswordEnv == "" {
+			return fmt.Errorf("ssh host requires password_env")
+		}
+		if host.Port < 0 {
+			return fmt.Errorf("ssh port must be positive")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported host mode: %s", host.Mode)
+	}
+}
+
+func isValidEnvVarName(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i, r := range value {
+		switch {
+		case r == '_':
+			continue
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false
+			}
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func summarizeSession(session models.Session, turn models.Turn, outcome string) string {
+	if text := strings.TrimSpace(session.Memory.RollingSummary); text != "" {
+		return text
+	}
+	return fmt.Sprintf("Last request: %s\nLast outcome: %s", turn.UserInput, outcome)
 }
 
 func contains(items []string, target string) bool {
@@ -744,6 +851,12 @@ func filterTraceEvents(events []models.Event) []models.Event {
 }
 
 func deriveAssistantText(run models.Run, turn models.Turn, events []models.Event) string {
+	for i := len(turn.Messages) - 1; i >= 0; i-- {
+		message := turn.Messages[i]
+		if message.Role == "assistant" && strings.TrimSpace(message.Content) != "" {
+			return message.Content
+		}
+	}
 	if text := firstNonEmpty(turn.FinalExplanation, run.FinalResponse, run.FailureMessage); text != "" {
 		return text
 	}
@@ -763,6 +876,23 @@ func deriveAssistantText(run models.Run, turn models.Turn, events []models.Event
 }
 
 func collectConsoleOutput(events []models.Event) string {
+	return collectToolResultOutput(nil, events)
+}
+
+func collectToolResultOutput(results []models.ToolExecutionRecord, events []models.Event) string {
+	if len(results) > 0 {
+		parts := make([]string, 0, len(results))
+		for _, result := range results {
+			text := strings.TrimSpace(firstNonEmpty(result.RawResult, result.ModelResult))
+			if text == "" {
+				continue
+			}
+			parts = append(parts, text)
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n\n")
+		}
+	}
 	var builder strings.Builder
 	for _, event := range events {
 		switch event.Type {
@@ -821,7 +951,7 @@ func runEventType(run models.Run) string {
 }
 
 func sessionPreview(session models.Session) string {
-	return firstNonEmpty(session.LastOutcome, session.Summary, session.LastInput)
+	return firstNonEmpty(session.LastOutcome, session.Memory.RollingSummary, session.Summary, session.LastInput)
 }
 
 func isActiveRunStatus(status string) bool {
@@ -982,6 +1112,7 @@ func buildGatewayConfigView(config models.GatewayConfig) models.GatewayConfigVie
 	view := models.GatewayConfigView{
 		CurrentPresetID: config.CurrentPresetID,
 		Presets:         append([]models.GatewayPreset(nil), config.Presets...),
+		RuntimeSettings: normalizeRuntimeSettings(config.RuntimeSettings),
 		UpdatedAt:       config.UpdatedAt,
 	}
 	if active, err := activeGatewayPreset(config); err == nil {
@@ -994,6 +1125,7 @@ func buildGatewayConfigView(config models.GatewayConfig) models.GatewayConfigVie
 func cloneGatewayConfig(config models.GatewayConfig) models.GatewayConfig {
 	cloned := models.GatewayConfig{
 		CurrentPresetID: config.CurrentPresetID,
+		RuntimeSettings: normalizeRuntimeSettings(config.RuntimeSettings),
 		UpdatedAt:       config.UpdatedAt,
 		Presets:         make([]models.GatewayPreset, len(config.Presets)),
 	}
@@ -1005,6 +1137,7 @@ func validateGatewayConfig(next, previous models.GatewayConfig) (models.GatewayC
 	now := time.Now().UTC()
 	result := models.GatewayConfig{
 		CurrentPresetID: strings.TrimSpace(next.CurrentPresetID),
+		RuntimeSettings: normalizeRuntimeSettings(next.RuntimeSettings),
 		Presets:         make([]models.GatewayPreset, 0, len(next.Presets)),
 		UpdatedAt:       now,
 	}
@@ -1061,4 +1194,36 @@ func validateGatewayConfig(next, previous models.GatewayConfig) (models.GatewayC
 		return models.GatewayConfig{}, models.GatewayPreset{}, err
 	}
 	return result, activePreset, nil
+}
+
+func normalizeRuntimeSettings(settings models.RuntimeSettings) models.RuntimeSettings {
+	defaults := models.DefaultRuntimeSettings()
+	if settings.ContextSoftLimitTokens <= 0 {
+		settings.ContextSoftLimitTokens = defaults.ContextSoftLimitTokens
+	}
+	if settings.CompressionTriggerTokens <= 0 {
+		settings.CompressionTriggerTokens = defaults.CompressionTriggerTokens
+	}
+	if settings.ResponseReserveTokens <= 0 {
+		settings.ResponseReserveTokens = defaults.ResponseReserveTokens
+	}
+	if settings.RecentFullTurns <= 0 {
+		settings.RecentFullTurns = defaults.RecentFullTurns
+	}
+	if settings.OlderUserLedgerEntries <= 0 {
+		settings.OlderUserLedgerEntries = defaults.OlderUserLedgerEntries
+	}
+	if settings.HostProfileTTLMinutes <= 0 {
+		settings.HostProfileTTLMinutes = defaults.HostProfileTTLMinutes
+	}
+	if settings.ToolResultMaxChars <= 0 {
+		settings.ToolResultMaxChars = defaults.ToolResultMaxChars
+	}
+	if settings.ToolResultHeadChars <= 0 {
+		settings.ToolResultHeadChars = defaults.ToolResultHeadChars
+	}
+	if settings.ToolResultTailChars < 0 {
+		settings.ToolResultTailChars = defaults.ToolResultTailChars
+	}
+	return settings
 }

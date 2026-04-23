@@ -43,6 +43,8 @@ const state = {
   approvals: [],
   sessions: [],
   settingsSelectedPresetId: "",
+  selectedHostId: "",
+  assetEditingHostId: "",
   currentSessionId: "",
   currentSessionDetail: null,
   liveEvents: new Map(),
@@ -122,6 +124,25 @@ function copyJSON(value) {
   return value ? JSON.parse(JSON.stringify(value)) : value;
 }
 
+function runtimeSettings() {
+  return state.gatewaySettings?.runtime_settings || {};
+}
+
+function runtimeSettingsWithDefaults() {
+  return {
+    context_soft_limit_tokens: 20000,
+    compression_trigger_tokens: 16000,
+    response_reserve_tokens: 4000,
+    recent_full_turns: 2,
+    older_user_ledger_entries: 6,
+    host_profile_ttl_minutes: 30,
+    tool_result_max_chars: 6000,
+    tool_result_head_chars: 4000,
+    tool_result_tail_chars: 1200,
+    ...runtimeSettings(),
+  };
+}
+
 function gatewayPresets() {
   return state.gatewaySettings?.presets || [];
 }
@@ -177,6 +198,50 @@ function latestSessionId() {
   return state.sessions[0]?.id || "";
 }
 
+function sessionTitle(session) {
+  return firstNonEmpty(session?.title, session?.preview, session?.last_input, "未命名会话");
+}
+
+function sessionPreviewText(session) {
+  return firstNonEmpty(session?.preview, session?.summary, session?.last_input, "暂无更多上下文。");
+}
+
+function latestRunForSessionDetail(detail) {
+  return detail?.turns?.at(-1)?.run || null;
+}
+
+function latestSessionActivity(detail) {
+  return detail?.turns?.at(-1)?.last_event_at || detail?.session?.updated_at || null;
+}
+
+function findHostById(hostId) {
+  return state.hosts.find((host) => host.id === hostId) || null;
+}
+
+function hostModeLabel(mode) {
+  return mode === "ssh" ? "SSH" : "本机";
+}
+
+function isValidEnvVarName(value) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(String(value || "").trim());
+}
+
+function sshPasswordMode(value) {
+  const text = String(value || "").trim();
+  if (!text) return "missing";
+  return isValidEnvVarName(text) ? "env" : "literal";
+}
+
+function syncSelectedHost() {
+  const currentHostId = state.currentSessionDetail?.host?.id;
+  if (currentHostId) {
+    state.selectedHostId = currentHostId;
+    return;
+  }
+  if (state.selectedHostId && findHostById(state.selectedHostId)) return;
+  state.selectedHostId = state.hosts[0]?.id || "";
+}
+
 async function loadCore() {
   const [health, gatewaySettings, hosts, runs, approvals, sessions] = await Promise.all([
     request("/api/health"),
@@ -193,8 +258,9 @@ async function loadCore() {
   state.approvals = sortByNewest(approvals.items || [], "created_at");
   state.sessions = sortByNewest(sessions.items || [], "updated_at");
   if (!state.settingsSelectedPresetId) {
-    state.settingsSelectedPresetId = gatewaySettings.current_preset_id || gatewaySettings.currentPresetID || "";
+    state.settingsSelectedPresetId = gatewaySettings.current_preset_id || "";
   }
+  syncSelectedHost();
 }
 
 async function loadSessionDetail(sessionId) {
@@ -205,15 +271,15 @@ async function loadSessionDetail(sessionId) {
   }
   state.currentSessionDetail = await request(`/api/sessions/${sessionId}`);
   state.currentSessionId = sessionId;
+  state.selectedHostId = state.currentSessionDetail?.host?.id || state.selectedHostId;
   const url = new URL(window.location.href);
   url.searchParams.set("session", sessionId);
   window.history.replaceState({}, "", url.toString());
 }
 
 function getDefaultHostId() {
-  if (state.currentSessionDetail?.host?.id) return state.currentSessionDetail.host.id;
-  const local = state.hosts.find((host) => host.id === "local");
-  return local?.id || state.hosts[0]?.id || "local";
+  syncSelectedHost();
+  return state.currentSessionDetail?.host?.id || state.selectedHostId || state.hosts[0]?.id || "local";
 }
 
 function scheduleRefresh({ detail = false } = {}) {
@@ -251,12 +317,12 @@ function connectGlobalEvents() {
 
   source.onopen = () => {
     state.streamConnected = true;
-    renderPage();
+    renderSharedShell();
   };
 
   source.onerror = () => {
     state.streamConnected = false;
-    renderPage();
+    renderSharedShell();
   };
 
   source.onmessage = (message) => {
@@ -283,6 +349,7 @@ function connectGlobalEvents() {
 }
 
 function renderPage() {
+  renderSharedShell();
   switch (page) {
     case "chat":
       renderChat();
@@ -299,6 +366,27 @@ function renderPage() {
   }
 }
 
+function renderSharedShell() {
+  const healthLabel = document.getElementById("shell-health-label");
+  const healthIndicator = document.getElementById("shell-health-indicator");
+  const healthModel = document.getElementById("shell-health-model");
+  const healthSummary = document.getElementById("shell-health-summary");
+  if (healthLabel) {
+    healthLabel.textContent = state.health?.status === "ok" ? "网关健康运行" : "网关状态异常";
+  }
+  if (healthIndicator) {
+    healthIndicator.classList.toggle("is-live", state.health?.status === "ok");
+  }
+  if (healthModel) {
+    const preset = state.health?.preset_name || "未配置预设";
+    const model = state.health?.model || "unknown-model";
+    healthModel.textContent = [preset, model, state.streamConnected ? "SSE 已连接" : "SSE 重连中"].join(" · ");
+  }
+  if (healthSummary) {
+    healthSummary.textContent = `Hosts ${state.health?.total_hosts ?? state.hosts.length} · Sessions ${state.health?.total_sessions ?? state.sessions.length} · Runs ${state.health?.total_runs ?? state.runs.length}`;
+  }
+}
+
 function buildReplay(item) {
   const mergedEvents = dedupeEvents([...(item.events || []), ...(state.liveEvents.get(item.run.id) || [])]);
   const toolEvents = [];
@@ -306,25 +394,25 @@ function buildReplay(item) {
   let assistantMessage = "";
   let consoleOutput = "";
 
+  const turnMessages = item.turn?.messages || [];
+  const toolResults = item.turn?.tool_results || [];
+
   for (const event of mergedEvents) {
-    if (event.type === "run.message_delta") {
-      delta += event.message || "";
-    }
-    if (event.type === "run.assistant_message" && event.message) {
-      assistantMessage = event.message;
-    }
-    if (event.type === "run.stdout") {
-      consoleOutput += event.message || "";
-    }
-    if (event.type === "run.stderr") {
-      consoleOutput += `[stderr] ${event.message || ""}`;
-    }
-    if (TRACE_EVENT_TYPES.has(event.type)) {
-      toolEvents.push(event);
-    }
+    if (event.type === "run.message_delta") delta += event.message || "";
+    if (event.type === "run.assistant_message" && event.message) assistantMessage = event.message;
+    if (event.type === "run.stdout") consoleOutput += event.message || "";
+    if (event.type === "run.stderr") consoleOutput += `[stderr] ${event.message || ""}`;
+    if (TRACE_EVENT_TYPES.has(event.type)) toolEvents.push(event);
   }
 
+  const assistantMessages = turnMessages.filter((message) => message.role === "assistant" && (message.content || "").trim());
+  const toolOutput = toolResults
+    .map((result) => result.raw_result || result.model_result || "")
+    .filter(Boolean)
+    .join("\n\n");
+
   const assistantContent = firstNonEmpty(
+    assistantMessages.at(-1)?.content,
     item.turn?.final_explanation,
     item.run?.final_response,
     item.assistant_text,
@@ -336,84 +424,246 @@ function buildReplay(item) {
 
   return {
     assistantContent,
-    consoleOutput: firstNonEmpty(item.console_output, consoleOutput),
+    consoleOutput: firstNonEmpty(toolOutput, item.console_output, consoleOutput),
+    toolResults,
     toolEvents: toolEvents.length > 0 ? toolEvents : item.tool_events || [],
     waitingApproval: item.waiting_approval || (item.approvals || []).some((approval) => !approval.decision),
     lastEventAt: item.last_event_at || mergedEvents.at(-1)?.timestamp || item.run?.updated_at,
   };
 }
 
+function renderSessionList() {
+  const count = document.getElementById("chat-session-count");
+  const list = document.getElementById("chat-session-list");
+  if (!count || !list) return;
+
+  count.textContent = String(state.sessions.length);
+  list.innerHTML = "";
+
+  if (state.sessions.length === 0) {
+    list.innerHTML = `<div class="app-empty-state">当前还没有会话，点击“新建会话”开始第一条真实请求。</div>`;
+    return;
+  }
+
+  for (const session of state.sessions) {
+    const item = document.createElement("button");
+    const isActive = session.id === state.currentSessionId;
+    const statusMeta = runStatusMeta(session.run_status);
+    item.type = "button";
+    item.className = `app-session-item${isActive ? " is-active" : ""}`;
+    item.innerHTML = `
+      <div class="app-session-item-head">
+        <strong>${escapeHTML(sessionTitle(session))}</strong>
+        <span class="app-session-item-status ${statusMeta.color}">${escapeHTML(session.run_status || "idle")}</span>
+      </div>
+      <div class="app-session-item-preview">${escapeHTML(truncateText(sessionPreviewText(session), 92))}</div>
+      <div class="app-session-item-meta">
+        <span>${escapeHTML(session.host_display_name || session.host_id || "未知主机")}</span>
+        <span>${formatTime(session.last_event_at || session.updated_at)}</span>
+      </div>
+    `;
+    item.addEventListener("click", async () => {
+      await loadSessionDetail(session.id);
+      renderChat();
+    });
+    list.appendChild(item);
+  }
+}
+
+function renderChatSummary() {
+  const title = document.getElementById("chat-conversation-title");
+  const summary = document.getElementById("chat-conversation-summary");
+  const memory = document.getElementById("chat-memory-status");
+  const host = document.getElementById("chat-conversation-host");
+  const run = document.getElementById("chat-conversation-run");
+  if (!title || !summary || !memory || !host || !run) return;
+
+  if (!state.currentSessionDetail) {
+    const selectedHost = findHostById(getDefaultHostId());
+    title.textContent = "选择或创建一段运维会话";
+    summary.textContent = "左侧仅显示已有 session；切换资产请在输入框上方选择目标主机后发起新会话。";
+    memory.textContent = selectedHost ? `新会话会在 ${selectedHost.display_name || selectedHost.id} 上创建独立记忆上下文。` : "多轮记忆状态将在真实会话后显示。";
+    host.textContent = selectedHost ? `目标主机 ${selectedHost.display_name || selectedHost.id}` : "未选主机";
+    run.textContent = selectedHost ? `新会话将走 ${hostModeLabel(selectedHost.mode)} 执行链路` : "暂无运行";
+    return;
+  }
+
+  const session = state.currentSessionDetail.session;
+  const latestRun = latestRunForSessionDetail(state.currentSessionDetail);
+  const latestTurn = state.currentSessionDetail.turns?.at(-1)?.turn;
+  const memoryState = state.currentSessionDetail.memory || {};
+  const promptStats = latestTurn?.prompt_stats || {};
+  title.textContent = sessionTitle(session);
+  summary.textContent = `${state.currentSessionDetail.turns.length} 次交互 · 最近活动 ${formatTime(latestSessionActivity(state.currentSessionDetail)) || "未知"}`;
+  memory.textContent = [
+    `完整保留 ${Math.max(Number(promptStats.recent_full_turn_count || 0), 0)} turn`,
+    memoryState.last_compacted_at ? `上次压缩 ${formatTime(memoryState.last_compacted_at)}` : "尚未触发压缩",
+    memoryState.profile_stale ? "Host Profile 已过期" : "Host Profile 最新",
+    promptStats.estimated_prompt_tokens ? `最近 prompt 约 ${promptStats.estimated_prompt_tokens} tokens` : "等待首轮预算",
+  ].join(" · ");
+  host.textContent = state.currentSessionDetail.host.display_name || state.currentSessionDetail.host.id;
+  run.textContent = latestRun ? `最近状态 ${latestRun.status}` : "暂无运行";
+}
+
+function renderChatComposer() {
+  const select = document.getElementById("chat-host-select");
+  const label = document.getElementById("chat-host-selection-label");
+  const note = document.getElementById("chat-composer-note");
+  if (!select || !label || !note) return;
+
+  const locked = Boolean(state.currentSessionDetail?.session?.id);
+  const activeHost = findHostById(getDefaultHostId());
+  select.innerHTML = "";
+
+  if (state.hosts.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "暂无主机";
+    select.appendChild(option);
+    select.disabled = true;
+    label.textContent = "请先去资产管理登记一台主机。";
+    note.textContent = "所有请求都经过统一 gateway、policy 和真实执行链路。";
+    return;
+  }
+
+  state.hosts.forEach((host) => {
+    const option = document.createElement("option");
+    option.value = host.id;
+    option.textContent = `${host.display_name || host.id} · ${hostModeLabel(host.mode)}`;
+    select.appendChild(option);
+  });
+  select.value = activeHost?.id || state.hosts[0].id;
+  select.disabled = locked;
+
+  if (!activeHost) {
+    label.textContent = "当前目标主机不可用。";
+    note.textContent = "所有请求都经过统一 gateway、policy 和真实执行链路。";
+    return;
+  }
+
+  const invalidSSHPasswordEnv = activeHost.mode === "ssh" && !isValidEnvVarName(activeHost.password_env);
+  label.textContent = locked
+    ? `当前会话固定在 ${activeHost.display_name || activeHost.id}`
+    : `${activeHost.display_name || activeHost.id} · ${activeHost.address || "localhost"}`;
+
+  if (locked) {
+    note.textContent = `当前 session 已绑定到 ${activeHost.display_name || activeHost.id}。点击“新建会话”后才能切换主机。`;
+  } else if (invalidSSHPasswordEnv) {
+    note.textContent = "当前 SSH 主机使用明文密码。可以继续执行，但建议改成环境变量名。";
+  } else {
+    note.textContent = `新会话会绑定到 ${activeHost.display_name || activeHost.id}，并走真实 ${hostModeLabel(activeHost.mode)} 执行链路。`;
+  }
+}
+
+function renderChatApprovals() {
+  const count = document.getElementById("chat-approval-count");
+  const list = document.getElementById("chat-approval-list");
+  if (!count || !list) return;
+
+  const approvals = state.currentSessionDetail?.pending_approvals?.length
+    ? state.currentSessionDetail.pending_approvals
+    : state.approvals.filter((item) => !item.decision);
+
+  count.textContent = String(approvals.length);
+  list.innerHTML = "";
+
+  if (approvals.length === 0) {
+    list.innerHTML = `<div class="app-empty-state">当前无待审批任务。</div>`;
+    return;
+  }
+
+  for (const approval of approvals) {
+    const item = document.createElement("div");
+    item.className = "app-approval-card";
+    item.innerHTML = `
+      <div class="app-approval-card-head">
+        <strong>${escapeHTML(approval.tool_name)}</strong>
+        <span>${escapeHTML(approval.scope || "")}</span>
+      </div>
+      <p class="app-approval-card-text">${escapeHTML(approval.reason)}</p>
+      <div class="app-approval-card-meta">${escapeHTML(approval.host_display_name || approval.host_id || "未知主机")} · ${escapeHTML(approval.session_title || approval.session_id || "未命名会话")}</div>
+      <div class="app-approval-card-actions">
+        <button data-id="${approval.id}" data-decision="approve" type="button">批准</button>
+        <button data-id="${approval.id}" data-decision="deny" type="button">拒绝</button>
+        ${approval.session_id ? `<button data-session="${approval.session_id}" type="button">跳转</button>` : ""}
+      </div>
+    `;
+    item.querySelectorAll("button[data-decision]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        await request(`/api/approvals/${button.dataset.id}/resolve`, {
+          method: "POST",
+          body: JSON.stringify({ decision: button.dataset.decision, actor: "web" }),
+        });
+        scheduleRefresh({ detail: true });
+      });
+    });
+    item.querySelector("button[data-session]")?.addEventListener("click", async (event) => {
+      const sessionId = event.currentTarget.dataset.session;
+      if (!sessionId) return;
+      await loadSessionDetail(sessionId);
+      renderChat();
+    });
+    list.appendChild(item);
+  }
+}
+
+function renderChatHealth() {
+  const status = document.getElementById("chat-health-status");
+  const model = document.getElementById("chat-health-model");
+  const summary = document.getElementById("chat-health-summary");
+  const sessions = document.getElementById("chat-health-sessions");
+  const runs = document.getElementById("chat-health-runs");
+  const hosts = document.getElementById("chat-health-hosts");
+  if (!status || !model || !summary || !sessions || !runs || !hosts) return;
+
+  status.textContent = state.health?.status === "ok" ? "健康运行" : "状态异常";
+  status.className = `app-status-inline${state.health?.status === "ok" ? " is-live" : ""}`;
+  model.textContent = [state.health?.preset_name || "未配置预设", state.health?.model || "unknown-model"].join(" · ");
+  summary.textContent = state.health?.policy_summary || "暂无策略摘要。";
+  sessions.textContent = String(state.health?.total_sessions ?? state.sessions.length);
+  runs.textContent = String(state.health?.total_runs ?? state.runs.length);
+  hosts.textContent = String(state.health?.total_hosts ?? state.hosts.length);
+}
+
+function renderChatTrace() {
+  const pre = document.getElementById("chat-live-trace");
+  if (!pre) return;
+  if (!state.currentSessionDetail?.turns?.length) {
+    pre.textContent = "选择会话后显示实时事件回放。";
+    return;
+  }
+
+  const lines = [];
+  for (const item of state.currentSessionDetail.turns) {
+    const events = dedupeEvents([...(item.events || []), ...(state.liveEvents.get(item.run.id) || [])]);
+    for (const event of events) {
+      lines.push(`[${formatTime(event.timestamp)}] ${eventTitle(event)}${event.message ? ` · ${event.message}` : ""}`);
+    }
+  }
+  pre.textContent = lines.slice(-40).join("\n") || "当前会话暂无事件。";
+}
+
 function renderChat() {
-  const healthText = document.getElementById("gateway-health-text");
-  const healthMeta = document.getElementById("gateway-health-meta");
-  const approvalCount = document.getElementById("approval-count");
-  const approvalList = document.getElementById("approval-list");
+  renderSessionList();
+  renderChatSummary();
+  renderChatComposer();
+  renderChatApprovals();
+  renderChatHealth();
+  renderChatTrace();
+
   const chatHistory = document.getElementById("chat-history");
   if (!chatHistory) return;
-
-  if (healthText) {
-    const color = state.health?.status === "ok" ? "bg-tertiary-container" : "bg-error";
-    const label = state.health?.status === "ok" ? "正常" : "异常";
-    healthText.innerHTML = `<span class="w-2 h-2 rounded-full ${color}"></span>${label}`;
-  }
-  if (healthMeta) {
-    const preset = state.health?.preset_name || "";
-    const model = state.health?.model || "unknown-model";
-    const stream = state.streamConnected ? "SSE 已连接" : "SSE 重连中";
-    healthMeta.textContent = [preset, model, stream].filter(Boolean).join(" · ");
-  }
-
-  const pendingApprovals = state.approvals.filter((item) => !item.decision);
-  if (approvalCount) approvalCount.textContent = `${pendingApprovals.length} 项`;
-  if (approvalList) {
-    approvalList.innerHTML = "";
-    if (pendingApprovals.length === 0) {
-      approvalList.innerHTML = `<li class="text-sm text-[#5C5C59]">当前无待审批任务</li>`;
-    }
-    for (const approval of pendingApprovals) {
-      const item = document.createElement("li");
-      item.className = "bg-surface-container-lowest border border-[#E2E2DB] rounded-lg p-sm flex items-start gap-sm hover:bg-surface transition-colors";
-      item.innerHTML = `
-        <span class="material-symbols-outlined text-primary text-[18px] mt-0.5">warning</span>
-        <div class="min-w-0 flex-1">
-          <div class="font-body-sm text-body-sm text-on-surface font-medium">${escapeHTML(approval.tool_name)}</div>
-          <div class="font-body-sm text-[12px] text-secondary">${escapeHTML(approval.reason)}</div>
-          <div class="font-body-sm text-[11px] text-secondary mt-1">${escapeHTML(approval.host_display_name || approval.host_id || "未知主机")} · ${escapeHTML(approval.session_title || approval.session_id || "未命名会话")}</div>
-          <div class="flex gap-2 mt-2">
-            <button class="px-2 py-1 rounded bg-[#C96442] text-white text-xs" data-id="${approval.id}" data-decision="approve" type="button">批准</button>
-            <button class="px-2 py-1 rounded bg-[#E6E4D9] text-[#262624] text-xs" data-id="${approval.id}" data-decision="deny" type="button">拒绝</button>
-            <button class="px-2 py-1 rounded bg-white border border-[#E2E2DB] text-[#262624] text-xs" data-session="${approval.session_id || ""}" type="button">跳转</button>
-          </div>
-        </div>
-      `;
-      item.querySelectorAll("button[data-decision]").forEach((button) => {
-        button.addEventListener("click", async () => {
-          button.disabled = true;
-          await request(`/api/approvals/${button.dataset.id}/resolve`, {
-            method: "POST",
-            body: JSON.stringify({ decision: button.dataset.decision, actor: "web" }),
-          });
-          scheduleRefresh({ detail: true });
-        });
-      });
-      item.querySelector("button[data-session]")?.addEventListener("click", async (event) => {
-        const sessionId = event.currentTarget.dataset.session;
-        if (!sessionId) return;
-        await loadSessionDetail(sessionId);
-        renderChat();
-      });
-      approvalList.appendChild(item);
-    }
-  }
-
   chatHistory.innerHTML = "";
+
   if (!state.currentSessionDetail?.turns?.length) {
     chatHistory.innerHTML = `
-      <div class="flex gap-md group">
-        <div class="w-8 h-8 rounded-full bg-surface-container-high flex items-center justify-center shrink-0 border border-outline-variant">
-          <span class="material-symbols-outlined text-[18px] text-on-surface">robot_2</span>
+      <div class="app-empty-chat">
+        <div class="app-empty-chat-icon">
+          <span class="material-symbols-outlined">forum</span>
         </div>
-        <div class="pt-1 text-on-surface font-body-md text-body-md">输入一条真实运维请求开始新的会话。</div>
+        <h3>开始一段新的真实运维会话</h3>
+        <p>输入一条明确请求，控制面会复用真实 host / session / turn / run 链路推进执行。</p>
       </div>`;
     return;
   }
@@ -507,9 +757,7 @@ function renderAssistantTrace(run, replay, approvals) {
     box.appendChild(consoleNode);
   }
 
-  if (box.childElementCount === 0) {
-    return document.createDocumentFragment();
-  }
+  if (box.childElementCount === 0) return document.createDocumentFragment();
   return node;
 }
 
@@ -539,18 +787,86 @@ function renderAssistantMessage(run, replay) {
 }
 
 function renderAssets() {
+  const totalHosts = document.getElementById("assets-total-hosts");
+  const activeRuns = document.getElementById("assets-active-runs");
+  const pendingApprovals = document.getElementById("assets-pending-approvals");
   const list = document.getElementById("assets-host-list");
   const form = document.getElementById("assets-host-form");
   const openFormButton = document.getElementById("assets-open-form");
-  if (!list || !form) return;
+  const formTitle = document.getElementById("assets-form-title");
+  const formSubtitle = document.getElementById("assets-form-subtitle");
+  const submitButton = document.getElementById("assets-host-submit");
+  const resetButton = document.getElementById("assets-host-reset");
+  const message = document.getElementById("assets-host-message");
+  if (!list || !form || !message || !formTitle || !formSubtitle || !submitButton || !resetButton) return;
+
+  const setFormMode = () => {
+    const editingHost = state.assetEditingHostId ? findHostById(state.assetEditingHostId) : null;
+    const idInput = form.querySelector("[name=id]");
+    formTitle.textContent = editingHost ? `编辑主机 ${editingHost.display_name || editingHost.id}` : "快速注册";
+    formSubtitle.textContent = editingHost ? "修改已接入主机的真实连接参数。" : "录入真实主机参数后立即接入控制面。";
+    submitButton.textContent = editingHost ? "保存修改" : "确认注册";
+    resetButton.textContent = editingHost ? "取消编辑" : "清空表单";
+    if (idInput) {
+      idInput.readOnly = Boolean(editingHost);
+      idInput.classList.toggle("is-readonly", Boolean(editingHost));
+    }
+  };
+
+  const resetHostForm = ({ preserveMessage = false } = {}) => {
+    state.assetEditingHostId = "";
+    form.reset();
+    const portInput = form.querySelector("[name=port]");
+    if (portInput) portInput.value = "22";
+    const modeSelect = form.querySelector("[name=mode]");
+    if (modeSelect) modeSelect.value = "ssh";
+    setFormMode();
+    if (!preserveMessage) {
+      message.textContent = "保存后会立刻出现在真实资产列表中。";
+    }
+  };
+
+  const beginHostEdit = (hostId) => {
+    const host = findHostById(hostId);
+    if (!host) return;
+    state.assetEditingHostId = host.id;
+    form.querySelector("[name=id]").value = host.id || "";
+    form.querySelector("[name=display_name]").value = host.display_name || "";
+    form.querySelector("[name=address]").value = host.address || "";
+    form.querySelector("[name=mode]").value = host.mode || "ssh";
+    form.querySelector("[name=port]").value = host.port || (host.mode === "local" ? "" : "22");
+    form.querySelector("[name=user]").value = host.user || "";
+    form.querySelector("[name=password_env]").value = host.password_env || "";
+    setFormMode();
+    const passwordMode = host.mode === "ssh" ? sshPasswordMode(host.password_env) : "";
+    if (passwordMode === "literal") {
+      message.textContent = "当前主机使用明文密码。可以保存，但建议改成环境变量名。";
+    } else {
+      message.textContent = `正在编辑 ${host.display_name || host.id}。`;
+    }
+    form.scrollIntoView({ behavior: "smooth", block: "start" });
+    form.querySelector("[name=display_name]")?.focus();
+  };
+
+  if (totalHosts) totalHosts.textContent = String(state.hosts.length);
+  if (activeRuns) {
+    activeRuns.textContent = String(state.runs.filter((run) => ["created", "running_agent", "tool_running", "waiting_approval"].includes(run.status)).length);
+  }
+  if (pendingApprovals) pendingApprovals.textContent = String(state.approvals.filter((item) => !item.decision).length);
 
   list.innerHTML = "";
   if (state.hosts.length === 0) {
-    list.innerHTML = `<div class="bg-white rounded-[16px] p-5 border border-[#E2E2DB] text-sm text-[#5C5C59]">当前没有主机，先在右侧注册一台。</div>`;
+    list.innerHTML = `<div class="app-empty-state">当前没有主机，先在右侧登记一台真实主机。</div>`;
   }
 
   for (const host of state.hosts) {
     const modeLabel = host.mode === "local" ? "本地" : "SSH";
+    const passwordMode = host.mode === "ssh" ? sshPasswordMode(host.password_env) : "";
+    const passwordHint = passwordMode === "env"
+      ? "密码来自环境变量"
+      : passwordMode === "literal"
+        ? "使用明文密码"
+        : "未配置凭据";
     const statusTone = host.status === "active" ? "text-tertiary-container bg-tertiary-container/10" : "text-secondary bg-[#E6E4D9]";
     const lastRunText = host.last_run_at ? `${escapeHTML(host.last_run_status || "unknown")} · ${formatTime(host.last_run_at)}` : "暂无真实运行";
     const node = document.createElement("div");
@@ -574,40 +890,71 @@ function renderAssets() {
         <div><p class="font-label text-[11px] text-secondary uppercase tracking-wider mb-1">会话 / Runs</p><p class="font-body-sm text-[13px] text-on-surface">${host.session_count || 0} / ${host.total_runs || 0}</p></div>
         <div><p class="font-label text-[11px] text-secondary uppercase tracking-wider mb-1">待审批</p><p class="font-body-sm text-[13px] text-on-surface">${host.pending_approvals || 0}</p></div>
       </div>
+      ${host.mode === "ssh" ? `
+      <div class="mt-4 pt-4 border-t border-[#E2E2DB]/50">
+        <p class="font-label text-[11px] text-secondary uppercase tracking-wider mb-1">凭据模式</p>
+        <div class="assets-host-credential-row">
+          <p class="font-body-sm text-[13px] text-on-surface">${escapeHTML(passwordHint)}</p>
+          ${passwordMode === "literal" ? '<span class="assets-host-warning-badge">明文告警</span>' : ""}
+        </div>
+      </div>` : ""}
       <div class="mt-4 pt-4 border-t border-[#E2E2DB]/50">
         <p class="font-label text-[11px] text-secondary uppercase tracking-wider mb-1">最近活动</p>
         <p class="font-body-sm text-[13px] text-on-surface">${lastRunText}</p>
       </div>
+      <div class="assets-host-actions">
+        <button class="assets-host-action" data-edit-host="${escapeHTML(host.id)}" type="button">编辑</button>
+      </div>
     `;
+    node.querySelector("[data-edit-host]")?.addEventListener("click", () => beginHostEdit(host.id));
     list.appendChild(node);
   }
+
+  setFormMode();
 
   if (!form.dataset.bound) {
     form.dataset.bound = "true";
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const data = new FormData(form);
-      await request("/api/hosts", {
-        method: "POST",
-        body: JSON.stringify({
-          id: String(data.get("id") || "").trim(),
-          display_name: String(data.get("display_name") || "").trim(),
-          address: String(data.get("address") || "").trim(),
-          mode: String(data.get("mode") || "").trim(),
-          port: Number(data.get("port") || 0),
-          user: String(data.get("user") || "").trim(),
-          password_env: String(data.get("password_env") || "").trim(),
-        }),
-      });
-      form.reset();
-      await loadCore();
-      renderAssets();
+      try {
+        message.textContent = "正在保存主机...";
+        const data = new FormData(form);
+        await request("/api/hosts", {
+          method: "POST",
+          body: JSON.stringify({
+            id: String(data.get("id") || "").trim(),
+            display_name: String(data.get("display_name") || "").trim(),
+            address: String(data.get("address") || "").trim(),
+            mode: String(data.get("mode") || "").trim(),
+            port: Number(data.get("port") || 0),
+            user: String(data.get("user") || "").trim(),
+            password_env: String(data.get("password_env") || "").trim(),
+          }),
+        });
+        await loadCore();
+        const savedHost = findHostById(String(data.get("id") || "").trim());
+        const savedPasswordMode = savedHost?.mode === "ssh" ? sshPasswordMode(savedHost.password_env) : "";
+        resetHostForm({ preserveMessage: true });
+        if (savedPasswordMode === "literal") {
+          message.textContent = "主机已保存。当前 SSH 使用明文密码，系统已保留但继续显示安全警告。";
+        } else {
+          message.textContent = "主机已保存并接入控制面。";
+        }
+        renderAssets();
+      } catch (error) {
+        message.textContent = `保存失败：${error.message}`;
+      }
+    });
+
+    form.addEventListener("reset", () => {
+      window.setTimeout(() => resetHostForm(), 0);
     });
   }
 
   if (openFormButton && !openFormButton.dataset.bound) {
     openFormButton.dataset.bound = "true";
     openFormButton.addEventListener("click", () => {
+      resetHostForm({ preserveMessage: true });
       form.scrollIntoView({ behavior: "smooth", block: "start" });
       form.querySelector("[name=id]")?.focus();
     });
@@ -630,9 +977,14 @@ function renderAutomation() {
   document.getElementById("automation-success-meta").textContent = `/ ${todayRuns.length || state.runs.length} 次`;
   document.getElementById("automation-running-count").textContent = String(runningRuns.length);
   document.getElementById("automation-failed-count").textContent = String(interventionRuns.length);
-  document.getElementById("automation-run-total").textContent = `全部 (${state.runs.length})`;
+  document.getElementById("automation-run-total").textContent = `${state.runs.length} 条真实执行`;
 
   list.innerHTML = "";
+  if (state.runs.length === 0) {
+    list.innerHTML = `<div class="app-empty-state automation-empty-state">当前还没有真实执行记录。</div>`;
+    return;
+  }
+
   for (const run of state.runs.slice(0, 20)) {
     const statusMeta = runStatusMeta(run.status);
     const item = document.createElement("div");
@@ -729,26 +1081,39 @@ function renderSettings() {
   const presetBaseURLInput = document.getElementById("settings-preset-base-url-input");
   const presetAPIKeyInput = document.getElementById("settings-preset-api-key-input");
   const presetActiveInput = document.getElementById("settings-preset-active-input");
+  const contextSoftLimitInput = document.getElementById("settings-context-soft-limit-input");
+  const compressionTriggerInput = document.getElementById("settings-compression-trigger-input");
+  const responseReserveInput = document.getElementById("settings-response-reserve-input");
+  const recentFullTurnsInput = document.getElementById("settings-recent-full-turns-input");
+  const olderUserLedgerInput = document.getElementById("settings-older-user-ledger-input");
+  const hostProfileTTLInput = document.getElementById("settings-host-profile-ttl-input");
+  const toolResultMaxCharsInput = document.getElementById("settings-tool-result-max-chars-input");
+  const toolResultHeadCharsInput = document.getElementById("settings-tool-result-head-chars-input");
+  const toolResultTailCharsInput = document.getElementById("settings-tool-result-tail-chars-input");
   const activateButton = document.getElementById("settings-activate-preset");
   const deleteButton = document.getElementById("settings-delete-preset");
   const addButton = document.getElementById("settings-add-preset");
-  if (!presetIDInput || !presetNameInput || !presetModelInput || !presetBaseURLInput || !presetAPIKeyInput || !presetActiveInput || !activateButton || !deleteButton || !addButton) {
+  if (!presetIDInput || !presetNameInput || !presetModelInput || !presetBaseURLInput || !presetAPIKeyInput || !presetActiveInput || !contextSoftLimitInput || !compressionTriggerInput || !responseReserveInput || !recentFullTurnsInput || !olderUserLedgerInput || !hostProfileTTLInput || !toolResultMaxCharsInput || !toolResultHeadCharsInput || !toolResultTailCharsInput || !activateButton || !deleteButton || !addButton) {
     return;
   }
 
-  const effectivePreset = selectedPreset || {
-    id: "",
-    name: "",
-    model: "",
-    base_url: "",
-    api_key: "",
-  };
+  const effectivePreset = selectedPreset || { id: "", name: "", model: "", base_url: "", api_key: "" };
+  const currentRuntime = runtimeSettingsWithDefaults();
   presetIDInput.value = effectivePreset.id || "";
   presetNameInput.value = effectivePreset.name || "";
   presetModelInput.value = effectivePreset.model || "";
   presetBaseURLInput.value = effectivePreset.base_url || "";
   presetAPIKeyInput.value = effectivePreset.api_key || "";
   presetActiveInput.checked = effectivePreset.id ? effectivePreset.id === currentGatewayPresetId() : true;
+  contextSoftLimitInput.value = currentRuntime.context_soft_limit_tokens;
+  compressionTriggerInput.value = currentRuntime.compression_trigger_tokens;
+  responseReserveInput.value = currentRuntime.response_reserve_tokens;
+  recentFullTurnsInput.value = currentRuntime.recent_full_turns;
+  olderUserLedgerInput.value = currentRuntime.older_user_ledger_entries;
+  hostProfileTTLInput.value = currentRuntime.host_profile_ttl_minutes;
+  toolResultMaxCharsInput.value = currentRuntime.tool_result_max_chars;
+  toolResultHeadCharsInput.value = currentRuntime.tool_result_head_chars;
+  toolResultTailCharsInput.value = currentRuntime.tool_result_tail_chars;
   activateButton.disabled = !effectivePreset.id || effectivePreset.id === currentGatewayPresetId();
   deleteButton.disabled = !effectivePreset.id || presets.length <= 1;
   message.textContent = "保存后的配置会持久化到本地数据目录，并同步更新运行中的 API Gateway Pro。";
@@ -767,6 +1132,17 @@ function renderSettings() {
           model: presetModelInput.value.trim(),
           base_url: presetBaseURLInput.value.trim(),
           api_key: presetAPIKeyInput.value.trim(),
+        };
+        next.runtime_settings = {
+          context_soft_limit_tokens: Number(contextSoftLimitInput.value || 0),
+          compression_trigger_tokens: Number(compressionTriggerInput.value || 0),
+          response_reserve_tokens: Number(responseReserveInput.value || 0),
+          recent_full_turns: Number(recentFullTurnsInput.value || 0),
+          older_user_ledger_entries: Number(olderUserLedgerInput.value || 0),
+          host_profile_ttl_minutes: Number(hostProfileTTLInput.value || 0),
+          tool_result_max_chars: Number(toolResultMaxCharsInput.value || 0),
+          tool_result_head_chars: Number(toolResultHeadCharsInput.value || 0),
+          tool_result_tail_chars: Number(toolResultTailCharsInput.value || 0),
         };
         const existingIndex = (next.presets || []).findIndex((item) => item.id === id);
         if (existingIndex >= 0) {
@@ -823,9 +1199,7 @@ function renderSettings() {
         if (!id) return;
         const next = copyJSON(state.gatewaySettings);
         next.presets = (next.presets || []).filter((item) => item.id !== id);
-        if (next.current_preset_id === id) {
-          next.current_preset_id = next.presets[0]?.id || "";
-        }
+        if (next.current_preset_id === id) next.current_preset_id = next.presets[0]?.id || "";
         message.textContent = "正在删除网关预设...";
         state.gatewaySettings = await request("/api/settings/gateway", {
           method: "PUT",
@@ -851,6 +1225,16 @@ function renderSettings() {
       presetBaseURLInput.value = state.health?.base_url || "https://api.longcat.chat";
       presetAPIKeyInput.value = "";
       presetActiveInput.checked = true;
+      const defaults = runtimeSettingsWithDefaults();
+      contextSoftLimitInput.value = defaults.context_soft_limit_tokens;
+      compressionTriggerInput.value = defaults.compression_trigger_tokens;
+      responseReserveInput.value = defaults.response_reserve_tokens;
+      recentFullTurnsInput.value = defaults.recent_full_turns;
+      olderUserLedgerInput.value = defaults.older_user_ledger_entries;
+      hostProfileTTLInput.value = defaults.host_profile_ttl_minutes;
+      toolResultMaxCharsInput.value = defaults.tool_result_max_chars;
+      toolResultHeadCharsInput.value = defaults.tool_result_head_chars;
+      toolResultTailCharsInput.value = defaults.tool_result_tail_chars;
       message.textContent = "填写新预设后点击保存即可。";
       presetNameInput.focus();
     });
@@ -970,7 +1354,7 @@ function approvalDecisionMeta(decision) {
 }
 
 function scrollChatToBottom() {
-  const scroller = document.querySelector("main section .overflow-y-auto");
+  const scroller = document.querySelector(".app-chat-scroll");
   if (!scroller) return;
   scroller.scrollTop = scroller.scrollHeight;
 }
@@ -985,9 +1369,7 @@ async function initChatPage() {
     } catch (error) {
       if (querySession) {
         state.currentSessionId = latestSessionId();
-        if (state.currentSessionId) {
-          await loadSessionDetail(state.currentSessionId);
-        }
+        if (state.currentSessionId) await loadSessionDetail(state.currentSessionId);
       } else {
         throw error;
       }
@@ -997,6 +1379,8 @@ async function initChatPage() {
   const newSessionButton = document.getElementById("new-session-button");
   const chatForm = document.getElementById("chat-form");
   const input = document.getElementById("chat-input");
+  const hostSelect = document.getElementById("chat-host-select");
+  const note = document.getElementById("chat-composer-note");
 
   newSessionButton?.addEventListener("click", () => {
     state.currentSessionId = "";
@@ -1004,9 +1388,18 @@ async function initChatPage() {
     const url = new URL(window.location.href);
     url.searchParams.delete("session");
     window.history.replaceState({}, "", url.toString());
+    syncSelectedHost();
     renderChat();
     input?.focus();
   });
+
+  if (hostSelect && !hostSelect.dataset.bound) {
+    hostSelect.dataset.bound = "true";
+    hostSelect.addEventListener("change", (event) => {
+      state.selectedHostId = event.currentTarget.value;
+      renderChat();
+    });
+  }
 
   if (input && !input.dataset.bound) {
     input.dataset.bound = "true";
@@ -1018,27 +1411,42 @@ async function initChatPage() {
     resize();
   }
 
-  chatForm?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const text = input?.value.trim() || "";
-    if (!text) return;
-    const result = await request("/api/runs", {
-      method: "POST",
-      body: JSON.stringify({
-        host_id: getDefaultHostId(),
-        session_id: state.currentSessionId || "",
-        user_input: text,
-        requested_by: "web",
-      }),
+  if (chatForm && !chatForm.dataset.bound) {
+    chatForm.dataset.bound = "true";
+    chatForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const text = input?.value.trim() || "";
+      if (!text) return;
+      const hostID = getDefaultHostId();
+      const host = findHostById(hostID);
+      if (!host) {
+        if (note) note.textContent = "发起失败：当前没有可用主机，请先到资产管理接入主机。";
+        return;
+      }
+      try {
+        if (note) note.textContent = "正在发起真实执行...";
+        const result = await request("/api/runs", {
+          method: "POST",
+          body: JSON.stringify({
+            host_id: hostID,
+            session_id: state.currentSessionId || "",
+            user_input: text,
+            requested_by: "web",
+          }),
+        });
+        if (input) {
+          input.value = "";
+          input.style.height = "auto";
+        }
+        await loadCore();
+        await loadSessionDetail(result.session_id);
+        if (note) note.textContent = "已提交到统一控制面，实时事件会继续刷新。";
+        renderChat();
+      } catch (error) {
+        if (note) note.textContent = `发起失败：${error.message}`;
+      }
     });
-    if (input) {
-      input.value = "";
-      input.style.height = "auto";
-    }
-    await loadCore();
-    await loadSessionDetail(result.session_id);
-    renderChat();
-  });
+  }
 
   renderChat();
 }

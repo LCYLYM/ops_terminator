@@ -98,9 +98,9 @@ func (e *Executor) runSSH(ctx context.Context, host models.Host, command string,
 	if host.Address == "" || host.User == "" {
 		return Result{}, errors.New("ssh host requires address and user")
 	}
-	password := strings.TrimSpace(os.Getenv(host.PasswordEnv))
-	if password == "" {
-		return Result{}, fmt.Errorf("missing password from env %s", host.PasswordEnv)
+	password, err := resolveSSHPassword(host)
+	if err != nil {
+		return Result{}, err
 	}
 
 	callback, err := e.hostKeyCallback()
@@ -227,4 +227,40 @@ func wrapWaitError(err error) error {
 		return err
 	}
 	return fmt.Errorf("command execution failed: %w", err)
+}
+
+func resolveSSHPassword(host models.Host) (string, error) {
+	raw := strings.TrimSpace(host.PasswordEnv)
+	if raw == "" {
+		return "", errors.New("ssh host requires password or password_env")
+	}
+	if isEnvVarName(raw) {
+		password := strings.TrimSpace(os.Getenv(raw))
+		if password == "" {
+			return "", fmt.Errorf("missing password from env %s", raw)
+		}
+		return password, nil
+	}
+	return raw, nil
+}
+
+func isEnvVarName(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i, r := range value {
+		switch {
+		case r == '_':
+			continue
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false
+			}
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		default:
+			return false
+		}
+	}
+	return true
 }
