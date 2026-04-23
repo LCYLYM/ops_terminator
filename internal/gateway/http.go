@@ -13,10 +13,13 @@ import (
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/hosts", s.handleHosts)
+	mux.HandleFunc("/api/sessions", s.handleSessions)
+	mux.HandleFunc("/api/sessions/", s.handleSessionRoutes)
 	mux.HandleFunc("/api/runs", s.handleRuns)
 	mux.HandleFunc("/api/runs/", s.handleRunRoutes)
 	mux.HandleFunc("/api/approvals", s.handleApprovals)
 	mux.HandleFunc("/api/approvals/", s.handleApprovalRoutes)
+	mux.HandleFunc("/api/events/stream", s.streamAllEvents)
 }
 
 func (s *Service) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -73,6 +76,41 @@ func (s *Service) handleRuns(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Service) handleSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	items, err := s.ListSessions()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Service) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	detail, found, err := s.GetSessionDetail(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
 }
 
 func (s *Service) handleRunRoutes(w http.ResponseWriter, r *http.Request) {
@@ -160,6 +198,36 @@ func (s *Service) streamRunEvents(w http.ResponseWriter, r *http.Request, runID 
 	flusher.Flush()
 
 	ch, unsubscribe := s.SubscribeRun(runID)
+	defer unsubscribe()
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case event := <-ch:
+			writeSSE(w, event)
+			flusher.Flush()
+		case <-ticker.C:
+			_, _ = w.Write([]byte(": keepalive\n\n"))
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *Service) streamAllEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, context.Canceled)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ch, unsubscribe := s.SubscribeAllEvents()
 	defer unsubscribe()
 
 	ticker := time.NewTicker(15 * time.Second)

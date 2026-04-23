@@ -15,15 +15,26 @@
 ## 当前能力
 
 - 主机管理：`local` / `ssh`
+- 会话控制面：`session / turn / run / approval / event / audit`
+- Web 主界面：
+  - 左侧会话列表
+  - 中间 ChatGPT 风格对话主视图
+  - 对话中展示 tool / policy / approval 卡片
+  - 右侧审批列表、run 列表、live trace
+  - 全局 SSE 实时刷新
 - 运维 builtins：
   - `hello_capability`
   - `host_probe`
   - `memory_inspect`
   - `disk_inspect`
+  - `directory_usage_inspect`
   - `port_inspect`
   - `process_search`
   - `service_status_inspect`
   - `file_log_search`
+  - `journal_log_search`
+  - `package_manager_inspect`
+  - `user_inspect`
   - `create_user`
   - `delete_user`
   - `restart_service`
@@ -60,6 +71,8 @@ go run ./cmd/osagent serve
 http://127.0.0.1:7788
 ```
 
+页面不是日志页，而是对话主视图；`Live Trace` 只作为辅助日志面板。
+
 ## CLI 示例
 
 ```bash
@@ -76,3 +89,11 @@ go run ./cmd/osagent approve --id <approval-id> --decision approve
 go test ./...
 go build ./...
 ```
+
+## 已验证链路
+
+- 真实 LongCat 流式/tool-calling
+- 只读运维闭环
+- 高风险审批闭环
+- `session detail` 历史回放接口
+- 全局 SSE 实时事件流

@@ -1,0 +1,12 @@
+{
+  "id": "safe_user_lifecycle_change",
+  "title": "Safe user lifecycle change",
+  "description": "用于在创建、删除、核查用户时强调权限边界和审批。",
+  "intent_examples": ["创建用户", "删除用户", "用户管理", "账号操作"],
+  "risk_category": "high",
+  "recommended_investigation_flow": ["user_inspect", "create_user", "delete_user"],
+  "decision_hints": ["先确认用户是否已存在", "用户生命周期操作必须审批", "解释作用域和影响范围"],
+  "explanation_hints": ["说明目标用户、权限影响和回退方案"],
+  "safer_alternatives": ["先做 user_inspect，再审批变更"]
+}
+

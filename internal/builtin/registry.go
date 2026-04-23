@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"osagentmvp/internal/models"
@@ -35,13 +36,17 @@ func NewRegistry(executor *runner.Executor) *Registry {
 	}
 	for _, tool := range []Tool{
 		newStaticTool(),
-		newReadOnlyCommandTool("host_probe", "Collect hostname, kernel, distro, shell, init system and key command presence.", true, "hostname; printf '\\n'; uname -a; printf '\\n'; if [ -f /etc/os-release ]; then cat /etc/os-release; fi; printf '\\n'; ps -p 1 -o comm=; printf '\\n'; command -v systemctl || true; command -v ss || true; command -v netstat || true"),
-		newReadOnlyCommandTool("memory_inspect", "Inspect memory and swap pressure using common Linux commands.", true, "free -h; printf '\\n'; cat /proc/meminfo | head -n 20"),
+		newReadOnlyCommandTool("host_probe", "Collect hostname, kernel, distro, shell, init system and key command presence.", true, "hostname; printf '\\n'; uname -a; printf '\\n'; if [ -f /etc/os-release ]; then cat /etc/os-release; elif command -v sw_vers >/dev/null 2>&1; then sw_vers; fi; printf '\\n'; ps -p 1 -o comm=; printf '\\n'; command -v systemctl || true; command -v service || true; command -v ss || true; command -v netstat || true; command -v journalctl || true; command -v apt || true; command -v dnf || true; command -v yum || true; command -v zypper || true"),
+		newReadOnlyCommandTool("memory_inspect", "Inspect memory and swap pressure using Linux or Darwin native commands.", true, "free -h 2>/dev/null || vm_stat; printf '\\n'; cat /proc/meminfo 2>/dev/null | head -n 20 || sysctl vm.swapusage 2>/dev/null || true"),
 		newReadOnlyCommandTool("disk_inspect", "Inspect filesystem usage and inode pressure.", true, "df -h; printf '\\n'; df -i"),
 		newParameterizedReadTool("port_inspect", "Inspect listening or connected ports. Optional port filter.", `ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null`, "port"),
 		newProcessSearchTool(),
 		newServiceStatusTool(),
 		newFileLogSearchTool(),
+		newDirectoryUsageTool(),
+		newJournalLogSearchTool(),
+		newPackageManagerInspectTool(),
+		newUserInspectTool(),
 		newMutatingTool("create_user", "Create a standard Linux user account.", "High-risk identity change; requires approval."),
 		newDeleteUserTool(),
 		newMutatingTool("restart_service", "Restart a service after approval.", "Service restart may affect availability; requires approval."),
@@ -53,17 +58,27 @@ func NewRegistry(executor *runner.Executor) *Registry {
 }
 
 func (r *Registry) Definitions() []models.ToolDefinition {
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	defs := make([]models.ToolDefinition, 0, len(r.tools))
-	for _, tool := range r.tools {
-		defs = append(defs, tool.Definition())
+	for _, name := range names {
+		defs = append(defs, r.tools[name].Definition())
 	}
 	return defs
 }
 
 func (r *Registry) Summaries() []models.ToolSummary {
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	items := make([]models.ToolSummary, 0, len(r.tools))
-	for _, tool := range r.tools {
-		items = append(items, tool.Summary())
+	for _, name := range names {
+		items = append(items, r.tools[name].Summary())
 	}
 	return items
 }
@@ -108,7 +123,7 @@ func (t *staticTool) Preview(string) (models.ActionPreview, error) {
 	return models.ActionPreview{ToolName: "hello_capability", ReadOnly: true}, nil
 }
 func (t *staticTool) Execute(context.Context, models.Host, ExecutionContext, string) (string, error) {
-	return "I can inspect host facts, memory, disk, ports, processes, services, and logs. I can also create users, delete users, restart services, or run custom shell commands, but mutating operations require approval and destructive shell commands are denied.", nil
+	return "I can inspect host facts, memory, disk, ports, processes, services, package managers, users, journals, directory usage, and logs. I can also create users, delete users, restart services, or run custom shell commands, but mutating operations require approval and destructive shell commands are denied.", nil
 }
 
 type readOnlyCommandTool struct {
@@ -257,7 +272,7 @@ func (t *serviceStatusTool) Preview(arguments string) (models.ActionPreview, err
 	if err != nil {
 		return models.ActionPreview{}, err
 	}
-	command := "systemctl status --no-pager " + shellQuote(service) + " || service " + shellQuote(service) + " status"
+	command := "systemctl status --no-pager " + shellQuote(service) + " 2>/dev/null || service " + shellQuote(service) + " status 2>/dev/null || launchctl list | grep -i -- " + shellQuote(service)
 	return models.ActionPreview{ToolName: "service_status_inspect", ReadOnly: true, CommandPreview: command}, nil
 }
 func (t *serviceStatusTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
@@ -304,6 +319,170 @@ func (t *fileLogSearchTool) Preview(arguments string) (models.ActionPreview, err
 	return models.ActionPreview{ToolName: "file_log_search", ReadOnly: true, CommandPreview: command}, nil
 }
 func (t *fileLogSearchTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+	preview, err := t.Preview(arguments)
+	if err != nil {
+		return "", err
+	}
+	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
+	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+}
+
+type directoryUsageTool struct{}
+
+func newDirectoryUsageTool() Tool { return &directoryUsageTool{} }
+func (t *directoryUsageTool) Definition() models.ToolDefinition {
+	return models.ToolDefinition{
+		Type: "function",
+		Function: models.ToolFunctionDefinition{
+			Name:        "directory_usage_inspect",
+			Description: "Inspect directory size hotspots for a target path.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{"type": "string", "description": "Directory path to inspect."},
+				},
+				"required": []string{"path"},
+			},
+		},
+	}
+}
+func (t *directoryUsageTool) Summary() models.ToolSummary {
+	return models.ToolSummary{Name: "directory_usage_inspect", Description: "Inspect per-directory disk usage.", ReadOnly: true}
+}
+func (t *directoryUsageTool) Preview(arguments string) (models.ActionPreview, error) {
+	path, err := stringArg(arguments, "path")
+	if err != nil {
+		return models.ActionPreview{}, err
+	}
+	command := "du -xh -d 1 " + shellQuote(path) + " 2>/dev/null || du -xh -d 1 " + shellQuote(path) + " || du -sh " + shellQuote(path)
+	return models.ActionPreview{ToolName: "directory_usage_inspect", ReadOnly: true, CommandPreview: command}, nil
+}
+func (t *directoryUsageTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+	preview, err := t.Preview(arguments)
+	if err != nil {
+		return "", err
+	}
+	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
+	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+}
+
+type journalLogSearchTool struct{}
+
+func newJournalLogSearchTool() Tool { return &journalLogSearchTool{} }
+func (t *journalLogSearchTool) Definition() models.ToolDefinition {
+	return models.ToolDefinition{
+		Type: "function",
+		Function: models.ToolFunctionDefinition{
+			Name:        "journal_log_search",
+			Description: "Read recent journal or syslog records for a service.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"service": map[string]any{"type": "string", "description": "Service or unit name."},
+					"lines":   map[string]any{"type": "integer", "description": "Optional number of lines, default 80."},
+				},
+				"required": []string{"service"},
+			},
+		},
+	}
+}
+func (t *journalLogSearchTool) Summary() models.ToolSummary {
+	return models.ToolSummary{Name: "journal_log_search", Description: "Inspect recent journal/syslog lines for a service.", ReadOnly: true}
+}
+func (t *journalLogSearchTool) Preview(arguments string) (models.ActionPreview, error) {
+	var input struct {
+		Service string `json:"service"`
+		Lines   int    `json:"lines"`
+	}
+	if err := decodeArguments(arguments, &input); err != nil {
+		return models.ActionPreview{}, err
+	}
+	if strings.TrimSpace(input.Service) == "" {
+		return models.ActionPreview{}, fmt.Errorf("service is required")
+	}
+	if input.Lines <= 0 {
+		input.Lines = 80
+	}
+	command := fmt.Sprintf("journalctl -u %s -n %d --no-pager 2>/dev/null || grep -i -- %s /var/log/system.log 2>/dev/null | tail -n %d || grep -i -- %s /var/log/messages 2>/dev/null | tail -n %d", shellQuote(input.Service), input.Lines, shellQuote(input.Service), input.Lines, shellQuote(input.Service), input.Lines)
+	return models.ActionPreview{ToolName: "journal_log_search", ReadOnly: true, CommandPreview: command}, nil
+}
+func (t *journalLogSearchTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+	preview, err := t.Preview(arguments)
+	if err != nil {
+		return "", err
+	}
+	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
+	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+}
+
+type packageManagerInspectTool struct{}
+
+func newPackageManagerInspectTool() Tool { return &packageManagerInspectTool{} }
+func (t *packageManagerInspectTool) Definition() models.ToolDefinition {
+	return models.ToolDefinition{
+		Type: "function",
+		Function: models.ToolFunctionDefinition{
+			Name:        "package_manager_inspect",
+			Description: "Inspect Linux package manager availability and optionally query a package.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"package": map[string]any{"type": "string", "description": "Optional package name to query."},
+				},
+			},
+		},
+	}
+}
+func (t *packageManagerInspectTool) Summary() models.ToolSummary {
+	return models.ToolSummary{Name: "package_manager_inspect", Description: "Inspect distro package manager and package state.", ReadOnly: true}
+}
+func (t *packageManagerInspectTool) Preview(arguments string) (models.ActionPreview, error) {
+	command := "command -v apt || true; command -v dnf || true; command -v yum || true; command -v zypper || true; command -v pacman || true"
+	if pkg, err := stringArg(arguments, "package"); err == nil && strings.TrimSpace(pkg) != "" {
+		command += "; dpkg -s " + shellQuote(pkg) + " 2>/dev/null || rpm -qi " + shellQuote(pkg) + " 2>/dev/null || pacman -Qi " + shellQuote(pkg) + " 2>/dev/null || true"
+	}
+	return models.ActionPreview{ToolName: "package_manager_inspect", ReadOnly: true, CommandPreview: command}, nil
+}
+func (t *packageManagerInspectTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+	preview, err := t.Preview(arguments)
+	if err != nil {
+		return "", err
+	}
+	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
+	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+}
+
+type userInspectTool struct{}
+
+func newUserInspectTool() Tool { return &userInspectTool{} }
+func (t *userInspectTool) Definition() models.ToolDefinition {
+	return models.ToolDefinition{
+		Type: "function",
+		Function: models.ToolFunctionDefinition{
+			Name:        "user_inspect",
+			Description: "Inspect user existence, uid/gid, groups, shell, and passwd entry.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"username": map[string]any{"type": "string", "description": "Username to inspect."},
+				},
+				"required": []string{"username"},
+			},
+		},
+	}
+}
+func (t *userInspectTool) Summary() models.ToolSummary {
+	return models.ToolSummary{Name: "user_inspect", Description: "Inspect Linux user account facts.", ReadOnly: true}
+}
+func (t *userInspectTool) Preview(arguments string) (models.ActionPreview, error) {
+	username, err := stringArg(arguments, "username")
+	if err != nil {
+		return models.ActionPreview{}, err
+	}
+	command := "id " + shellQuote(username) + " 2>/dev/null; getent passwd " + shellQuote(username) + " 2>/dev/null || dscl . -read /Users/" + shellQuote(username) + " 2>/dev/null || true"
+	return models.ActionPreview{ToolName: "user_inspect", ReadOnly: true, CommandPreview: command}, nil
+}
+func (t *userInspectTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
 	preview, err := t.Preview(arguments)
 	if err != nil {
 		return "", err

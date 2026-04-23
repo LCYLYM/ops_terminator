@@ -7,26 +7,35 @@
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-  <main class="shell">
-    <section class="hero">
-      <div>
-        <p class="eyebrow">OS Agent Control Plane</p>
-        <h1>真实 Linux 运维闭环</h1>
-        <p class="lede">统一 gateway、真实 LongCat agent loop、审批、事件流、本地/SSH 执行。页面只接控制面，不自己执行命令。</p>
+  <div class="app-shell">
+    <aside class="rail rail-left">
+      <div class="brand">
+        <p class="eyebrow">OS Agent</p>
+        <h1>运维对话控制面</h1>
+        <p class="muted">主视图是会话，对话里展示工具和审批，实时日志降到辅助区。</p>
       </div>
-      <div class="status-card">
-        <div class="status-dot"></div>
-        <div>
-          <strong>Gateway</strong>
-          <span id="health">Checking...</span>
-        </div>
-      </div>
-    </section>
 
-    <section class="grid">
-      <article class="panel">
-        <h2>Hosts</h2>
-        <form id="host-form" class="stack">
+      <section class="panel">
+        <div class="section-head">
+          <h2>Gateway</h2>
+          <span id="health-pill" class="pill">checking</span>
+        </div>
+        <div id="gateway-meta" class="muted small"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h2>会话</h2>
+          <span id="session-count" class="pill pill-soft">0</span>
+        </div>
+        <div id="session-list" class="stack"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h2>主机</h2>
+        </div>
+        <form id="host-form" class="stack compact-form">
           <input name="id" placeholder="host id">
           <input name="display_name" placeholder="display name">
           <select name="mode">
@@ -34,34 +43,78 @@
             <option value="ssh">ssh</option>
           </select>
           <input name="address" placeholder="ssh address">
-          <input name="port" placeholder="22">
-          <input name="user" placeholder="ssh user">
+          <div class="row">
+            <input name="port" placeholder="22">
+            <input name="user" placeholder="ssh user">
+          </div>
           <input name="password_env" placeholder="password env var">
-          <button type="submit">Add Host</button>
+          <button type="submit">保存主机</button>
         </form>
-        <div id="hosts" class="list"></div>
-      </article>
+        <div id="host-list" class="stack"></div>
+      </section>
+    </aside>
 
-      <article class="panel">
-        <h2>Run</h2>
-        <form id="run-form" class="stack">
-          <select id="run-host" name="host_id"></select>
-          <textarea name="user_input" rows="6" placeholder="例如：请检查 80 端口占用，并判断是否需要重启 nginx"></textarea>
-          <button type="submit">Start Run</button>
+    <main class="chat-stage">
+      <section class="chat-header">
+        <div>
+          <p class="eyebrow">Conversation</p>
+          <h2 id="conversation-title">选择或创建一段运维会话</h2>
+        </div>
+        <div class="header-meta">
+          <div id="conversation-host" class="pill pill-soft">No host</div>
+          <div id="current-run-pill" class="pill">No active run</div>
+        </div>
+      </section>
+
+      <section id="chat-thread" class="chat-thread"></section>
+
+      <section class="composer panel">
+        <form id="run-form" class="composer-form">
+          <div class="composer-top">
+            <label>
+              <span>Host</span>
+              <select id="run-host" name="host_id"></select>
+            </label>
+            <label>
+              <span>Session</span>
+              <input id="run-session" name="session_id" placeholder="留空则新建">
+            </label>
+          </div>
+          <textarea name="user_input" rows="5" placeholder="例如：请先检查 80 端口占用、服务状态和最近日志，再判断是否要重启 nginx"></textarea>
+          <div class="composer-actions">
+            <span class="muted small">所有请求都经过统一 gateway、policy 和真实执行链路。</span>
+            <button type="submit">发送并执行</button>
+          </div>
         </form>
-        <div id="approvals" class="list"></div>
-      </article>
-    </section>
+      </section>
+    </main>
 
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Live Events</h2>
-        <div id="run-badge">No run</div>
-      </div>
-      <pre id="events" class="events"></pre>
-    </section>
-  </main>
+    <aside class="rail rail-right">
+      <section class="panel">
+        <div class="section-head">
+          <h2>待审批</h2>
+          <span id="approval-count" class="pill pill-warn">0</span>
+        </div>
+        <div id="approval-list" class="stack"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h2>Runs</h2>
+          <span id="run-count" class="pill pill-soft">0</span>
+        </div>
+        <div id="run-list" class="stack"></div>
+      </section>
+
+      <section class="panel trace-panel">
+        <div class="section-head">
+          <h2>Live Trace</h2>
+          <span class="muted small">日志辅助面板</span>
+        </div>
+        <pre id="live-trace" class="trace"></pre>
+      </section>
+    </aside>
+  </div>
   <script src="/static/app.js"></script>
 </body>
 </html>
-

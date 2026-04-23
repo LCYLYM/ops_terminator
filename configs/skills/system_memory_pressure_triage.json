@@ -1,0 +1,12 @@
+{
+  "id": "system_memory_pressure_triage",
+  "title": "System memory pressure triage",
+  "description": "用于定位内存与 swap 压力、找出高占用进程并判断是否需要进一步处置。",
+  "intent_examples": ["内存高", "free", "swap", "内存压力", "机器卡"],
+  "risk_category": "medium",
+  "recommended_investigation_flow": ["memory_inspect", "process_search", "service_status_inspect"],
+  "decision_hints": ["先确认是否是真正的 memory pressure，再看高占用进程", "不要未确认就重启服务"],
+  "explanation_hints": ["区分内存占用高和真正的可用内存不足"],
+  "safer_alternatives": ["优先只读分析，再决定是否需要变更"]
+}
+

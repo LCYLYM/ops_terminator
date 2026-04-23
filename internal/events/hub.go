@@ -45,11 +45,21 @@ func (h *Hub) Subscribe(runID string) (<-chan models.Event, func()) {
 	}
 }
 
+func (h *Hub) SubscribeAll() (<-chan models.Event, func()) {
+	return h.Subscribe("*")
+}
+
 func (h *Hub) Emit(event models.Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	for _, ch := range h.subscribers[event.RunID] {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+	for _, ch := range h.subscribers["*"] {
 		select {
 		case ch <- event:
 		default:

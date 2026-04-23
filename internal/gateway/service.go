@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	contextbuilder "osagentmvp/internal/context"
@@ -68,6 +69,7 @@ func (s *Service) EnsureBootstrapState() error {
 func (s *Service) ListHosts() ([]models.Host, error)         { return s.store.ListHosts() }
 func (s *Service) ListRuns() ([]models.Run, error)           { return s.store.ListRuns() }
 func (s *Service) ListApprovals() ([]models.Approval, error) { return s.store.ListApprovals() }
+func (s *Service) ListSessions() ([]models.Session, error)   { return s.store.ListSessions() }
 
 func (s *Service) UpsertHost(host models.Host) (models.Host, error) {
 	now := time.Now().UTC()
@@ -163,11 +165,15 @@ func (s *Service) SubscribeRun(runID string) (<-chan models.Event, func()) {
 	return s.hub.Subscribe(runID)
 }
 
+func (s *Service) SubscribeAllEvents() (<-chan models.Event, func()) {
+	return s.hub.SubscribeAll()
+}
+
 func (s *Service) ResolveApproval(id, decision, actor string) (models.Run, error) {
 	if s.approvals == nil {
 		return models.Run{}, fmt.Errorf("approval resolver is not configured")
 	}
-	approval, _, err := s.approvals.Resolve(id, decision, actor)
+	approval, approved, err := s.approvals.Resolve(id, decision, actor)
 	if err != nil {
 		return models.Run{}, err
 	}
@@ -179,7 +185,11 @@ func (s *Service) ResolveApproval(id, decision, actor string) (models.Run, error
 		return models.Run{}, fmt.Errorf("run not found: %s", approval.RunID)
 	}
 	run.PendingApproval = ""
-	run.Status = models.RunStatusRunningAgent
+	if approved {
+		run.Status = models.RunStatusRunningAgent
+	} else {
+		run.Status = models.RunStatusDenied
+	}
 	run.UpdatedAt = time.Now().UTC()
 	if err := s.store.SaveRun(run); err != nil {
 		return models.Run{}, err
@@ -193,6 +203,69 @@ func (s *Service) ResolveApproval(id, decision, actor string) (models.Run, error
 		Timestamp: time.Now().UTC(),
 	})
 	return run, nil
+}
+
+func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error) {
+	session, found, err := s.store.GetSession(id)
+	if err != nil || !found {
+		return models.SessionDetail{}, found, err
+	}
+	host, found, err := s.store.GetHost(session.HostID)
+	if err != nil || !found {
+		return models.SessionDetail{}, false, err
+	}
+	allTurns, err := s.store.ListTurns()
+	if err != nil {
+		return models.SessionDetail{}, false, err
+	}
+	allApprovals, err := s.store.ListApprovals()
+	if err != nil {
+		return models.SessionDetail{}, false, err
+	}
+
+	approvalsByRun := make(map[string][]models.Approval)
+	pendingApprovals := make([]models.Approval, 0)
+	for _, approval := range allApprovals {
+		approvalsByRun[approval.RunID] = append(approvalsByRun[approval.RunID], approval)
+		if approval.Decision == "" && contains(session.RunIDs, approval.RunID) {
+			pendingApprovals = append(pendingApprovals, approval)
+		}
+	}
+
+	items := make([]models.TurnHistoryItem, 0, len(session.TurnIDs))
+	for _, turn := range allTurns {
+		if turn.SessionID != session.ID {
+			continue
+		}
+		run, _, err := s.store.GetRun(turn.RunID)
+		if err != nil {
+			return models.SessionDetail{}, false, err
+		}
+		runEvents, err := s.store.ListEventsByRun(turn.RunID)
+		if err != nil {
+			return models.SessionDetail{}, false, err
+		}
+		items = append(items, models.TurnHistoryItem{
+			Turn:      turn,
+			Run:       run,
+			Events:    runEvents,
+			Approvals: approvalsByRun[turn.RunID],
+		})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Turn.CreatedAt.Before(items[j].Turn.CreatedAt)
+	})
+	sort.Slice(pendingApprovals, func(i, j int) bool {
+		return pendingApprovals[i].CreatedAt.After(pendingApprovals[j].CreatedAt)
+	})
+
+	return models.SessionDetail{
+		Session:          session,
+		Host:             host,
+		Turns:            items,
+		PendingApprovals: pendingApprovals,
+	}, true, nil
 }
 
 func (s *Service) RecordEvent(event models.Event) error {
@@ -302,4 +375,13 @@ func (s *Service) ensureSession(host models.Host, sessionID, userInput string) (
 
 func summarizeSession(session models.Session, input, outcome string) string {
 	return fmt.Sprintf("Last request: %s\nLast outcome: %s", input, outcome)
+}
+
+func contains(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }

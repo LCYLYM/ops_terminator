@@ -203,3 +203,17 @@ type PolicyRule struct {
 	Scope            string `json:"scope"`
 	SaferAlternative string `json:"safer_alternative,omitempty"`
 }
+
+type TurnHistoryItem struct {
+	Turn      Turn       `json:"turn"`
+	Run       Run        `json:"run"`
+	Events    []Event    `json:"events"`
+	Approvals []Approval `json:"approvals,omitempty"`
+}
+
+type SessionDetail struct {
+	Session          Session           `json:"session"`
+	Host             Host              `json:"host"`
+	Turns            []TurnHistoryItem `json:"turns"`
+	PendingApprovals []Approval        `json:"pending_approvals"`
+}
