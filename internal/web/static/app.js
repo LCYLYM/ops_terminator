@@ -238,14 +238,14 @@ function renderConversation() {
     const assistantRow = document.createElement("div");
     assistantRow.className = "message-row assistant";
     const assistantText = item.turn.final_explanation || item.run.final_response || assistantStatusFallback(item.run.status);
-    assistantRow.innerHTML = `<div class="bubble">${escapeHTML(assistantText)}</div>`;
+    assistantRow.innerHTML = `<div class="bubble markdown">${renderMarkdown(assistantText)}</div>`;
     group.appendChild(assistantRow);
 
     const draft = state.activeDrafts.get(item.run.id);
     if (draft && item.run.status !== "completed" && item.run.status !== "failed" && item.run.status !== "denied") {
       const draftRow = document.createElement("div");
       draftRow.className = "message-row draft";
-      draftRow.innerHTML = `<div class="bubble draft">${escapeHTML(draft)}</div>`;
+      draftRow.innerHTML = `<div class="bubble markdown draft">${renderMarkdown(draft)}</div>`;
       group.appendChild(draftRow);
     }
 
@@ -441,6 +441,34 @@ function escapeHTML(value) {
 function stringifyValue(value) {
   if (typeof value === "string") return value;
   return JSON.stringify(value);
+}
+
+function renderMarkdown(value) {
+  const input = String(value ?? "");
+  if (!window.marked?.parse) {
+    return escapeHTML(input);
+  }
+  const raw = window.marked.parse(input, { breaks: true, gfm: true });
+  return sanitizeHTML(raw);
+}
+
+function sanitizeHTML(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  template.content.querySelectorAll("script, style, iframe, object, embed").forEach((node) => node.remove());
+  template.content.querySelectorAll("*").forEach((node) => {
+    [...node.attributes].forEach((attr) => {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.toLowerCase();
+      if (name.startsWith("on")) {
+        node.removeAttribute(attr.name);
+      }
+      if ((name === "href" || name === "src") && value.startsWith("javascript:")) {
+        node.removeAttribute(attr.name);
+      }
+    });
+  });
+  return template.innerHTML;
 }
 
 Promise.all([loadHealth(), loadHosts(), loadSessions(), loadRuns(), loadApprovals()])

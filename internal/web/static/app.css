@@ -212,6 +212,59 @@ button:hover {
   white-space: pre-wrap;
 }
 
+.bubble.markdown {
+  white-space: normal;
+}
+
+.bubble.markdown h1,
+.bubble.markdown h2,
+.bubble.markdown h3,
+.bubble.markdown h4 {
+  font-family: "Manrope", "PingFang SC", sans-serif;
+  margin: 0 0 10px;
+  line-height: 1.25;
+}
+
+.bubble.markdown p,
+.bubble.markdown ul,
+.bubble.markdown ol,
+.bubble.markdown pre,
+.bubble.markdown blockquote {
+  margin: 0 0 12px;
+}
+
+.bubble.markdown ul,
+.bubble.markdown ol {
+  padding-left: 20px;
+}
+
+.bubble.markdown code {
+  font-family: "IBM Plex Mono", monospace;
+  background: rgba(23, 111, 79, 0.08);
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+
+.bubble.markdown pre {
+  overflow: auto;
+  background: #16201a;
+  color: #d5e3da;
+  padding: 14px 16px;
+  border-radius: 14px;
+}
+
+.bubble.markdown pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
+.bubble.markdown blockquote {
+  border-left: 3px solid rgba(23, 111, 79, 0.35);
+  padding-left: 12px;
+  color: var(--muted);
+}
+
 .bubble.user {
   background: linear-gradient(135deg, #1b2320 0%, #29352f 100%);
   color: white;

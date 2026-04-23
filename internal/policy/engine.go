@@ -12,7 +12,7 @@ type Engine struct{}
 func New() *Engine { return &Engine{} }
 
 func (e *Engine) Summary() string {
-	return "默认允许只读运维工具。涉及用户变更、服务重启和任意 shell 的操作进入审批。明显破坏性命令直接拒绝。"
+	return "默认允许只读运维工具。run_shell 会先按命令内容判断：只读诊断命令直通、变更命令走审批、明显破坏性命令直接拒绝。"
 }
 
 func (e *Engine) Check(preview models.ActionPreview) models.PolicyRule {
@@ -28,11 +28,20 @@ func (e *Engine) Check(preview models.ActionPreview) models.PolicyRule {
 				}
 			}
 		}
+		for _, pattern := range allowReadOnlyShellPatterns {
+			if pattern.MatchString(command) {
+				return models.PolicyRule{
+					Decision: models.PolicyDecisionAllow,
+					Reason:   "命令匹配只读诊断规则，允许直接执行。",
+					Scope:    preview.CommandPreview,
+				}
+			}
+		}
 		return models.PolicyRule{
 			Decision:         models.PolicyDecisionAsk,
-			Reason:           "任意 shell 执行需要人工确认。",
+			Reason:           "命令可能修改系统状态，需人工确认后执行。",
 			Scope:            preview.CommandPreview,
-			SaferAlternative: "优先使用内置只读运维工具或更小范围命令。",
+			SaferAlternative: "优先使用只读命令先确认环境，再审批变更动作。",
 		}
 	}
 
@@ -60,6 +69,18 @@ var denyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bpoweroff\b`),
 	regexp.MustCompile(`:\(\)\s*\{`),
 	regexp.MustCompile(`\bdd\s+if=`),
+}
+
+var allowReadOnlyShellPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`^\s*(hostname|uname|whoami|pwd|date)(\s|$)`),
+	regexp.MustCompile(`^\s*(df|du|free|vm_stat|swapon|lsblk|mount)(\s|$)`),
+	regexp.MustCompile(`^\s*(ps|pgrep|top|vmstat|iostat|sar)(\s|$)`),
+	regexp.MustCompile(`^\s*(ss|netstat|lsof)(\s|$)`),
+	regexp.MustCompile(`^\s*(cat|less|more|tail|head|grep|egrep|awk|sed\s+-n)(\s|$)`),
+	regexp.MustCompile(`^\s*(find|ls|stat|file|readlink|realpath)(\s|$)`),
+	regexp.MustCompile(`^\s*(id|getent|groups)(\s|$)`),
+	regexp.MustCompile(`^\s*(systemctl\s+status|service\s+\S+\s+status|journalctl)(\s|$)`),
+	regexp.MustCompile(`^\s*(apt-cache|apt\s+list|dnf\s+list|yum\s+list|rpm\s+-q|dpkg\s+-s|zypper\s+search|pacman\s+-Q)(\s|$)`),
 }
 
 func firstNonEmpty(values ...string) string {
