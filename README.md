@@ -1,16 +1,16 @@
 # Product MVP
 
-这是基于当前最小 agent 闭环重新拉起的独立产品目录，不继承旧 `260422比赛超聚变/mvp` 的实现代码，只继承需求边界。
 
 ## 目标
 
-- 真实 LongCat thinking 模型
+- 真实 LongCat thinking 模型/qwen模型
 - 流式 tool-calling agent loop
 - 统一 gateway
 - `host / session / turn / run / approval / event / audit`
 - 本地与 SSH 真实执行
 - Web 与 CLI 共用一条控制面路径
 - 面向 Linux 运维场景的内置工具与风控
+- 主要是web端
 
 ## 当前能力
 
