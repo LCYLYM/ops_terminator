@@ -12,55 +12,268 @@
   <script id="tailwind-config">
     tailwind.config = {
       darkMode: "class",
-      theme: { extend: { colors: { "surface": "#fcf9f5", "surface-variant": "#e5e2df", "surface-container-lowest": "#ffffff", "surface-container-low": "#f6f3f0", "surface-container": "#f0edea", "on-surface": "#1c1c1a", "on-surface-variant": "#56423c", "secondary": "#5f5f56", "primary": "#9a4021", "primary-container": "#b95837", "tertiary-container": "#008283", "error": "#ba1a1a", "surface-tint": "#9d4324" } } }
+      theme: {
+        extend: {
+          colors: {
+            "surface": "#fcf9f5",
+            "surface-variant": "#e5e2df",
+            "surface-container-lowest": "#ffffff",
+            "surface-container-low": "#f6f3f0",
+            "surface-container": "#f0edea",
+            "on-surface": "#1c1c1a",
+            "on-surface-variant": "#56423c",
+            "secondary": "#5f5f56",
+            "primary": "#9a4021",
+            "primary-container": "#b95837",
+            "tertiary-container": "#008283",
+            "error": "#ba1a1a",
+            "surface-tint": "#9d4324"
+          },
+          borderRadius: {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          spacing: {
+            "sm": "8px",
+            "gutter": "24px",
+            "2xl": "64px",
+            "unit": "4px",
+            "container-max": "1120px",
+            "md": "16px",
+            "xs": "4px",
+            "xl": "40px",
+            "lg": "24px"
+          },
+          fontFamily: {
+            "h2": ["Manrope"],
+            "h1": ["Manrope"],
+            "body-sm": ["Inter"],
+            "body-md": ["Inter"],
+            "body-lg": ["Inter"],
+            "h3": ["Manrope"],
+            "label": ["Inter"]
+          },
+          fontSize: {
+            "h2": ["32px", {"lineHeight": "1.3", "fontWeight": "600"}],
+            "h1": ["40px", {"lineHeight": "1.2", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+            "body-sm": ["14px", {"lineHeight": "1.5", "fontWeight": "400"}],
+            "body-md": ["16px", {"lineHeight": "1.6", "fontWeight": "400"}],
+            "body-lg": ["18px", {"lineHeight": "1.7", "fontWeight": "400"}],
+            "h3": ["24px", {"lineHeight": "1.4", "fontWeight": "500"}],
+            "label": ["13px", {"lineHeight": "1.2", "letterSpacing": "0.05em", "fontWeight": "500"}]
+          }
+        }
+      }
     }
   </script>
   <link href="/static/app.css" rel="stylesheet"/>
 </head>
-<body class="bg-background text-on-background min-h-screen font-body-md antialiased selection:bg-primary-container selection:text-on-primary-container" data-page="settings">
-  <nav class="fixed left-0 top-0 h-full flex flex-col p-4 h-screen w-64 border-r border-[#E2E2DB] dark:border-stone-800 bg-[#F5F4ED] dark:bg-stone-950 z-50">
-    <div class="mb-8 px-4 mt-2"><h1 class="text-lg font-bold text-stone-900 dark:text-stone-100 font-manrope tracking-tight">运维控制台</h1><p class="text-xs text-stone-500 mt-1 font-manrope tracking-tight">静谧的智慧</p></div>
-    <ul class="flex-1 space-y-2 font-manrope text-sm tracking-tight">
-      <li><a class="flex items-center gap-3 px-4 py-3 rounded-lg text-stone-600 hover:bg-[#E6E4D9]/50 transition-colors" href="/assets"><span class="material-symbols-outlined text-lg">dns</span><span>资产管理</span></a></li>
-      <li><a class="flex items-center gap-3 px-4 py-3 rounded-lg text-stone-600 hover:bg-[#E6E4D9]/50 transition-colors" href="/automation"><span class="material-symbols-outlined text-lg">bolt</span><span>自动化中心</span></a></li>
-      <li><a class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#C96442] font-semibold bg-[#E6E4D9] scale-95 duration-200" href="/settings"><span class="material-symbols-outlined text-lg" style="font-variation-settings: 'FILL' 1;">settings</span><span>系统设置</span></a></li>
-      <li><a class="flex items-center gap-3 px-4 py-3 rounded-lg text-stone-600 hover:bg-[#E6E4D9]/50 transition-colors" href="/"><span class="material-symbols-outlined text-lg">chat</span><span>对话历史</span></a></li>
-    </ul>
-  </nav>
-  <header class="flex justify-between items-center px-6 py-3 ml-64 docked full-width top-0 sticky z-40 bg-white/80 dark:bg-stone-900/80 backdrop-blur-sm border-b border-[#E2E2DB] dark:border-stone-800 transition-all duration-300">
-    <div class="flex items-center gap-4"><div class="relative group hidden md:block"><span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 text-sm">search</span><input class="pl-9 pr-4 py-1.5 bg-surface-container-lowest border border-[#E2E2DB] rounded-full text-sm w-64 placeholder:text-stone-400 text-stone-700 bg-transparent" placeholder="搜索..." type="text"/></div><span class="font-manrope text-base text-[#C96442] hidden md:block">运维控制台</span></div>
-    <div class="flex items-center gap-2"><button class="p-2 rounded-full text-stone-500 hover:bg-[#E6E4D9]/50 transition-colors"><span class="material-symbols-outlined">notifications</span></button><button class="p-2 rounded-full text-stone-500 hover:bg-[#E6E4D9]/50 transition-colors"><span class="material-symbols-outlined">help_outline</span></button><button class="p-2 rounded-full text-stone-500 hover:bg-[#E6E4D9]/50 transition-colors"><span class="material-symbols-outlined">account_circle</span></button></div>
-  </header>
-  <main class="ml-64 p-gutter lg:p-xl xl:p-2xl min-h-[calc(100vh-65px)] flex flex-col items-center">
-    <div class="w-full max-w-container-max space-y-xl">
-      <header class="flex flex-col gap-sm">
-        <h2 class="font-h2 text-h2 text-on-surface">系统设置</h2>
-        <p class="font-body-md text-body-md text-on-surface-variant">管理平台核心组件、接口授权与全局运行策略。</p>
-      </header>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-lg">
-        <section class="bg-surface-container-lowest border border-surface-variant rounded-xl p-lg flex flex-col gap-lg">
-          <div class="flex items-center justify-between border-b border-surface-variant pb-md"><h3 class="font-h3 text-h3 text-on-surface">组件状态</h3><span class="material-symbols-outlined text-on-surface-variant">monitor_heart</span></div>
-          <div class="flex flex-col gap-md">
-            <div class="flex items-center justify-between p-md bg-surface rounded-lg border border-surface-variant/50"><div class="flex items-center gap-sm"><span class="material-symbols-outlined text-secondary">router</span><span class="font-label text-label text-on-surface">Gateway 节点</span></div><div class="flex items-center gap-xs"><span class="w-2 h-2 rounded-full bg-tertiary-container shadow-[0_0_8px_rgba(0,130,131,0.4)]"></span><span class="font-body-sm text-body-sm text-on-surface-variant ml-2" id="settings-gateway-status">健康运行</span></div></div>
-            <div class="flex items-center justify-between p-md bg-surface rounded-lg border border-surface-variant/50"><div class="flex items-center gap-sm"><span class="material-symbols-outlined text-secondary">shield</span><span class="font-label text-label text-on-surface">执行策略</span></div><div class="flex items-center gap-xs"><span class="font-body-sm text-body-sm text-on-surface-variant ml-2" id="settings-policy-summary">加载中...</span></div></div>
-          </div>
-        </section>
-        <section class="bg-surface-container-lowest border border-surface-variant rounded-xl p-lg flex flex-col gap-lg">
-          <div class="flex items-center justify-between border-b border-surface-variant pb-md"><h3 class="font-h3 text-h3 text-on-surface">运行配置</h3><span class="material-symbols-outlined text-on-surface-variant">rule</span></div>
-          <div class="flex flex-col gap-md">
-            <div class="flex items-center justify-between"><div class="flex flex-col gap-xs"><span class="font-label text-label text-on-surface">默认模型</span><span class="font-body-sm text-body-sm text-on-surface-variant" id="settings-model">LongCat</span></div></div>
-            <div class="flex items-center justify-between mt-sm"><div class="flex flex-col gap-xs"><span class="font-label text-label text-on-surface">当前 hosts</span><span class="font-body-sm text-body-sm text-on-surface-variant" id="settings-host-count">0</span></div><div class="flex flex-col gap-xs"><span class="font-label text-label text-on-surface">累计 runs</span><span class="font-body-sm text-body-sm text-on-surface-variant" id="settings-run-count">0</span></div></div>
-          </div>
-        </section>
-        <section class="bg-surface-container-lowest border border-surface-variant rounded-xl p-lg flex flex-col gap-lg md:col-span-2">
-          <div class="flex items-center justify-between border-b border-surface-variant pb-md"><div class="flex flex-col gap-xs"><h3 class="font-h3 text-h3 text-on-surface">能力与边界</h3><p class="font-body-sm text-body-sm text-on-surface-variant">当前控制面的 Linux 运维能力与安全边界说明。</p></div></div>
-          <div class="overflow-x-auto">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4" id="settings-capabilities"></div>
-          </div>
-        </section>
+<body class="app-page bg-background text-on-background min-h-screen font-body-md antialiased selection:bg-primary-container selection:text-on-primary-container" data-page="settings">
+  <div class="app-shell">
+    <aside class="app-sidebar">
+      <div class="app-brand">
+        <div class="app-brand-icon">
+          <span class="material-symbols-outlined">settings</span>
+        </div>
+        <div>
+          <h1 class="app-brand-title">运维控制台</h1>
+          <p class="app-brand-subtitle">静谧的智慧</p>
+        </div>
       </div>
+
+      <nav class="app-nav">
+        <a class="app-nav-item" href="/assets">
+          <span class="material-symbols-outlined text-lg">dns</span>
+          <span>资产管理</span>
+        </a>
+        <a class="app-nav-item" href="/automation">
+          <span class="material-symbols-outlined text-lg">bolt</span>
+          <span>自动化中心</span>
+        </a>
+        <a class="app-nav-item is-active" href="/settings">
+          <span class="material-symbols-outlined text-lg">settings</span>
+          <span>系统设置</span>
+        </a>
+        <a class="app-nav-item" href="/">
+          <span class="material-symbols-outlined text-lg">chat</span>
+          <span>对话历史</span>
+        </a>
+      </nav>
+
+      <div class="app-sidebar-footer">
+        <div class="app-user-chip">
+          <div class="app-user-avatar">
+            <span class="material-symbols-outlined">person</span>
+          </div>
+          <div>
+            <p class="app-user-name">Admin User</p>
+            <p class="app-user-role">System Operator</p>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="app-shell-main">
+      <header class="app-topbar">
+        <div class="app-topbar-left">
+          <label class="app-search">
+            <span class="material-symbols-outlined text-sm">search</span>
+            <input placeholder="搜索..." type="text"/>
+          </label>
+          <span class="app-topbar-accent">运维控制台</span>
+        </div>
+        <div class="app-topbar-right">
+          <button class="app-icon-button" type="button"><span class="material-symbols-outlined">notifications</span></button>
+          <button class="app-icon-button" type="button"><span class="material-symbols-outlined">help_outline</span></button>
+          <button class="app-icon-button" type="button"><span class="material-symbols-outlined">account_circle</span></button>
+        </div>
+      </header>
+
+      <main class="app-content">
+        <div class="app-content-inner app-content-inner--narrow">
+          <div class="mb-10">
+            <h2 class="app-page-title">系统设置</h2>
+            <p class="app-page-subtitle">管理平台核心组件、接口授权与全局运行策略。</p>
+          </div>
+
+          <div class="app-section-grid app-section-grid--two settings-grid">
+            <section class="app-card bg-surface-container-lowest border border-surface-variant flex flex-col gap-lg">
+              <div class="app-card-head">
+                <h3 class="app-card-title">组件状态</h3>
+                <span class="material-symbols-outlined app-card-icon">monitor_heart</span>
+              </div>
+              <div class="app-card-body flex flex-col gap-md">
+                <div class="flex items-center justify-between p-md bg-surface rounded-[18px] border border-surface-variant/50">
+                  <div class="flex items-center gap-sm">
+                    <span class="material-symbols-outlined text-secondary">router</span>
+                    <span class="font-label text-label text-on-surface">Gateway 节点</span>
+                  </div>
+                  <div class="flex items-center gap-xs">
+                    <span class="w-2 h-2 rounded-full bg-tertiary-container shadow-[0_0_8px_rgba(0,130,131,0.4)]"></span>
+                    <span class="font-body-sm text-body-sm text-on-surface-variant ml-2" id="settings-gateway-status">健康运行</span>
+                  </div>
+                </div>
+                <div class="flex items-center justify-between p-md bg-surface rounded-[18px] border border-surface-variant/50">
+                  <div class="flex items-center gap-sm">
+                    <span class="material-symbols-outlined text-secondary">shield</span>
+                    <span class="font-label text-label text-on-surface">执行策略</span>
+                  </div>
+                  <div class="flex items-center gap-xs">
+                    <span class="font-body-sm text-body-sm text-on-surface-variant ml-2" id="settings-policy-summary">加载中...</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="app-card bg-surface-container-lowest border border-surface-variant flex flex-col gap-lg">
+              <div class="app-card-head">
+                <h3 class="app-card-title">运行配置</h3>
+                <span class="material-symbols-outlined app-card-icon">rule</span>
+              </div>
+              <div class="app-card-body flex flex-col gap-6">
+                <div class="flex items-center justify-between">
+                  <div class="flex flex-col gap-xs">
+                    <span class="font-label text-label text-on-surface">当前预设</span>
+                    <span class="font-body-sm text-body-sm text-on-surface-variant" id="settings-preset-name">加载中...</span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                  <div class="rounded-[18px] border border-surface-variant/50 bg-surface px-4 py-4">
+                    <span class="font-label text-label text-on-surface block mb-2">当前模型</span>
+                    <span class="font-body-lg text-body-lg text-on-surface-variant break-all" id="settings-model">LongCat</span>
+                  </div>
+                  <div class="rounded-[18px] border border-surface-variant/50 bg-surface px-4 py-4">
+                    <span class="font-label text-label text-on-surface block mb-2">Base URL</span>
+                    <span class="font-body-sm text-body-sm text-on-surface-variant break-all" id="settings-base-url">--</span>
+                  </div>
+                  <div class="rounded-[18px] border border-surface-variant/50 bg-surface px-4 py-4">
+                    <span class="font-label text-label text-on-surface block mb-2">当前 hosts</span>
+                    <span class="font-body-lg text-body-lg text-on-surface-variant" id="settings-host-count">0</span>
+                  </div>
+                  <div class="rounded-[18px] border border-surface-variant/50 bg-surface px-4 py-4">
+                    <span class="font-label text-label text-on-surface block mb-2">累计 runs</span>
+                    <span class="font-body-lg text-body-lg text-on-surface-variant" id="settings-run-count">0</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="app-card bg-surface-container-lowest border border-surface-variant flex flex-col gap-lg md:col-span-2">
+              <div class="app-card-head">
+                <div>
+                  <h3 class="app-card-title">能力与边界</h3>
+                  <p class="app-card-subtitle">当前控制面的 Linux 运维能力与安全边界说明。</p>
+                </div>
+              </div>
+              <div class="app-card-body">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4" id="settings-capabilities"></div>
+              </div>
+            </section>
+
+            <section class="app-card bg-surface-container-lowest border border-surface-variant flex flex-col gap-lg md:col-span-2">
+              <div class="app-card-head">
+                <div>
+                  <h3 class="app-card-title">API Gateway Pro 网关配置</h3>
+                  <p class="app-card-subtitle">统一管理可切换的模型预设，保存后会立刻作用于 Web 与 CLI 共用的控制面。</p>
+                </div>
+                <button class="app-button-secondary" id="settings-add-preset" type="button">
+                  <span class="material-symbols-outlined text-[18px]">add</span>
+                  <span>新增预设</span>
+                </button>
+              </div>
+              <div class="app-card-body">
+                <div class="grid grid-cols-1 xl:grid-cols-[320px_minmax(0,1fr)] gap-6">
+                  <div class="space-y-3" id="settings-preset-list"></div>
+                  <form class="space-y-5" id="settings-gateway-form">
+                    <input id="settings-preset-id" type="hidden"/>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <label class="block">
+                        <span class="font-label text-label text-on-surface block mb-2">预设名称</span>
+                        <input class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface" id="settings-preset-name-input" placeholder="例如：LongCat Thinking" type="text"/>
+                      </label>
+                      <label class="block">
+                        <span class="font-label text-label text-on-surface block mb-2">模型</span>
+                        <input class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface font-mono" id="settings-preset-model-input" placeholder="LongCat-Flash-Thinking-2601" type="text"/>
+                      </label>
+                    </div>
+                    <label class="block">
+                      <span class="font-label text-label text-on-surface block mb-2">Base URL</span>
+                      <input class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface font-mono" id="settings-preset-base-url-input" placeholder="https://api.longcat.chat" type="text"/>
+                    </label>
+                    <label class="block">
+                      <span class="font-label text-label text-on-surface block mb-2">API Key</span>
+                      <textarea class="w-full min-h-[120px] rounded-[14px] border border-surface-variant bg-surface px-4 py-3 text-on-surface font-mono resize-y" id="settings-preset-api-key-input" placeholder="sk-..." spellcheck="false"></textarea>
+                    </label>
+                    <label class="inline-flex items-center gap-3">
+                      <input class="rounded border-surface-variant text-primary focus:ring-primary" id="settings-preset-active-input" type="checkbox"/>
+                      <span class="font-body-sm text-body-sm text-on-surface-variant">保存后立即切换为当前生效预设</span>
+                    </label>
+                    <div class="flex flex-wrap gap-3">
+                      <button class="app-primary-button w-auto px-6" id="settings-save-preset" type="submit">
+                        <span class="material-symbols-outlined text-[18px]">save</span>
+                        <span>保存预设</span>
+                      </button>
+                      <button class="app-button-secondary" id="settings-activate-preset" type="button">
+                        <span class="material-symbols-outlined text-[18px]">published_with_changes</span>
+                        <span>切换为当前</span>
+                      </button>
+                      <button class="app-button-secondary" id="settings-delete-preset" type="button">
+                        <span class="material-symbols-outlined text-[18px]">delete</span>
+                        <span>删除预设</span>
+                      </button>
+                    </div>
+                    <p class="font-body-sm text-body-sm text-on-surface-variant" id="settings-gateway-message">保存后的配置会持久化到本地数据目录，并同步更新运行中的 API Gateway Pro。</p>
+                  </form>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
     </div>
-  </main>
+  </div>
   <script src="/static/app.js"></script>
 </body>
 </html>

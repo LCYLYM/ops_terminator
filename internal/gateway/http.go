@@ -12,6 +12,7 @@ import (
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/settings/gateway", s.handleGatewaySettings)
 	mux.HandleFunc("/api/hosts", s.handleHosts)
 	mux.HandleFunc("/api/sessions", s.handleSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSessionRoutes)
@@ -23,7 +24,33 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func (s *Service) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "no_sandbox": true})
+	health, err := s.HealthSnapshot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, health)
+}
+
+func (s *Service) handleGatewaySettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.GatewayConfigView())
+	case http.MethodPut:
+		var request models.GatewayConfig
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		updated, err := s.UpdateGatewayConfig(request)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, updated)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Service) handleHosts(w http.ResponseWriter, r *http.Request) {
@@ -190,6 +217,7 @@ func (s *Service) streamRunEvents(w http.ResponseWriter, r *http.Request, runID 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	items, _ := s.ListRunEvents(runID)
 	for _, item := range items {
@@ -226,6 +254,7 @@ func (s *Service) streamAllEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	ch, unsubscribe := s.SubscribeAllEvents()
 	defer unsubscribe()
@@ -259,6 +288,9 @@ func writeError(w http.ResponseWriter, status int, err error) {
 
 func writeSSE(w http.ResponseWriter, event models.Event) {
 	data, _ := json.Marshal(event)
+	_, _ = w.Write([]byte("id: "))
+	_, _ = w.Write([]byte(event.ID))
+	_, _ = w.Write([]byte("\n"))
 	_, _ = w.Write([]byte("data: "))
 	_, _ = w.Write(data)
 	_, _ = w.Write([]byte("\n\n"))

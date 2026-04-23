@@ -9,16 +9,18 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"osagentmvp/internal/models"
 )
 
 type Client struct {
+	httpClient *http.Client
+	mu         sync.RWMutex
 	baseURL    string
 	apiKey     string
 	model      string
-	httpClient *http.Client
 }
 
 type chatCompletionRequest struct {
@@ -76,19 +78,34 @@ type toolCallAccumulator struct {
 }
 
 func NewClient(baseURL, apiKey, model string, timeout time.Duration) *Client {
-	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
-		model:   model,
+	client := &Client{
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
 	}
+	client.UpdateConfig(baseURL, apiKey, model)
+	return client
+}
+
+func (c *Client) UpdateConfig(baseURL, apiKey, model string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	c.apiKey = strings.TrimSpace(apiKey)
+	c.model = strings.TrimSpace(model)
+}
+
+func (c *Client) SnapshotConfig() (baseURL, apiKey, model string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL, c.apiKey, c.model
 }
 
 func (c *Client) StreamChatCompletion(ctx context.Context, messages []models.ChatMessage, tools []models.ToolDefinition, onText func(string)) (*models.AssistantResponse, error) {
+	baseURL, apiKey, model := c.SnapshotConfig()
 	requestBody := chatCompletionRequest{
-		Model:       c.model,
+		Model:       model,
 		Messages:    messages,
 		Tools:       tools,
 		ToolChoice:  "auto",
@@ -101,11 +118,11 @@ func (c *Client) StreamChatCompletion(ctx context.Context, messages []models.Cha
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.chatCompletionsURL(), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatCompletionsURL(baseURL), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
@@ -197,11 +214,11 @@ func (c *Client) StreamChatCompletion(ctx context.Context, messages []models.Cha
 	return result, nil
 }
 
-func (c *Client) chatCompletionsURL() string {
-	if strings.HasSuffix(c.baseURL, "/openai") {
-		return c.baseURL + "/v1/chat/completions"
+func chatCompletionsURL(baseURL string) string {
+	if strings.HasSuffix(baseURL, "/openai") {
+		return baseURL + "/v1/chat/completions"
 	}
-	return c.baseURL + "/openai/v1/chat/completions"
+	return baseURL + "/openai/v1/chat/completions"
 }
 
 func (c *Client) readAPIError(resp *http.Response) error {

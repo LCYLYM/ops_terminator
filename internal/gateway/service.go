@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	contextbuilder "osagentmvp/internal/context"
 	"osagentmvp/internal/events"
 	"osagentmvp/internal/models"
+	"osagentmvp/internal/policy"
 	"osagentmvp/internal/store"
 )
 
@@ -24,10 +27,19 @@ type Service struct {
 	runtime   Runtime
 	approvals ApprovalResolver
 	logger    *log.Logger
+	llmClient GatewayClient
+
+	settingsMu    sync.RWMutex
+	gatewayConfig models.GatewayConfig
 }
 
 type ApprovalResolver interface {
 	Resolve(id, decision, actor string) (models.Approval, bool, error)
+}
+
+type GatewayClient interface {
+	UpdateConfig(baseURL, apiKey, model string)
+	SnapshotConfig() (baseURL, apiKey, model string)
 }
 
 type RunRequest struct {
@@ -49,6 +61,16 @@ func (s *Service) SetApprovals(resolver ApprovalResolver) {
 	s.approvals = resolver
 }
 
+func (s *Service) SetLLMClient(client GatewayClient) {
+	s.llmClient = client
+}
+
+func (s *Service) SetGatewayConfig(config models.GatewayConfig) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	s.gatewayConfig = cloneGatewayConfig(config)
+}
+
 func (s *Service) EnsureBootstrapState() error {
 	if _, found, err := s.store.GetHost("local"); err != nil {
 		return err
@@ -66,10 +88,201 @@ func (s *Service) EnsureBootstrapState() error {
 	})
 }
 
-func (s *Service) ListHosts() ([]models.Host, error)         { return s.store.ListHosts() }
-func (s *Service) ListRuns() ([]models.Run, error)           { return s.store.ListRuns() }
-func (s *Service) ListApprovals() ([]models.Approval, error) { return s.store.ListApprovals() }
-func (s *Service) ListSessions() ([]models.Session, error)   { return s.store.ListSessions() }
+func (s *Service) HealthSnapshot() (models.GatewayHealth, error) {
+	state, err := s.loadDashboardState()
+	if err != nil {
+		return models.GatewayHealth{}, err
+	}
+	activePreset, err := s.activeGatewayPreset()
+	if err != nil {
+		return models.GatewayHealth{}, err
+	}
+	activeRuns := 0
+	for _, run := range state.runs {
+		if isActiveRunStatus(run.Status) {
+			activeRuns++
+		}
+	}
+	return models.GatewayHealth{
+		Status:           "ok",
+		NoSandbox:        true,
+		PresetID:         activePreset.ID,
+		PresetName:       activePreset.Name,
+		BaseURL:          activePreset.BaseURL,
+		Model:            activePreset.Model,
+		PolicySummary:    policy.New().Summary(),
+		TotalHosts:       len(state.hosts),
+		TotalSessions:    len(state.sessions),
+		TotalRuns:        len(state.runs),
+		ActiveRuns:       activeRuns,
+		PendingApprovals: state.pendingApprovalCount,
+		Capabilities:     buildCapabilityViews(state),
+	}, nil
+}
+
+func (s *Service) GatewayConfigView() models.GatewayConfigView {
+	s.settingsMu.RLock()
+	defer s.settingsMu.RUnlock()
+	return buildGatewayConfigView(s.gatewayConfig)
+}
+
+func (s *Service) UpdateGatewayConfig(next models.GatewayConfig) (models.GatewayConfigView, error) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+
+	validated, activePreset, err := validateGatewayConfig(next, s.gatewayConfig)
+	if err != nil {
+		return models.GatewayConfigView{}, err
+	}
+	if err := s.store.SaveGatewayConfig(validated); err != nil {
+		return models.GatewayConfigView{}, fmt.Errorf("save gateway config: %w", err)
+	}
+	s.gatewayConfig = cloneGatewayConfig(validated)
+	if s.llmClient != nil {
+		s.llmClient.UpdateConfig(activePreset.BaseURL, activePreset.APIKey, activePreset.Model)
+	}
+	return buildGatewayConfigView(validated), nil
+}
+
+func (s *Service) ListHosts() ([]models.HostView, error) {
+	state, err := s.loadDashboardState()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]models.HostView, 0, len(state.hosts))
+	for _, host := range state.hosts {
+		view := models.HostView{
+			Host:             host,
+			Status:           "ready",
+			SessionCount:     state.sessionCountByHost[host.ID],
+			TotalRuns:        state.runCountByHost[host.ID],
+			ActiveRuns:       state.activeRunCountByHost[host.ID],
+			PendingApprovals: state.pendingApprovalCountByHost[host.ID],
+			LastRunStatus:    state.lastRunStatusByHost[host.ID],
+			LastRunAt:        cloneTimePtr(state.lastRunAtByHost[host.ID]),
+		}
+		if view.ActiveRuns > 0 {
+			view.Status = "active"
+		}
+		items = append(items, view)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		left := items[i].LastRunAt
+		right := items[j].LastRunAt
+		switch {
+		case left == nil && right == nil:
+			return items[i].UpdatedAt.After(items[j].UpdatedAt)
+		case left == nil:
+			return false
+		case right == nil:
+			return true
+		default:
+			return left.After(*right)
+		}
+	})
+	return items, nil
+}
+
+func (s *Service) ListRuns() ([]models.RunView, error) {
+	state, err := s.loadDashboardState()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]models.RunView, 0, len(state.runs))
+	for _, run := range state.runs {
+		session := state.sessionByID[run.SessionID]
+		host := state.hostByID[run.HostID]
+		view := models.RunView{
+			Run:              run,
+			SessionTitle:     session.Title,
+			SessionPreview:   sessionPreview(session),
+			HostDisplayName:  host.DisplayName,
+			PendingApprovals: state.pendingApprovalCountByRun[run.ID],
+			LatestAssistant:  firstNonEmpty(run.FinalResponse, run.FailureMessage),
+			LastEventAt:      runLastActivity(run),
+			LastEventType:    runEventType(run),
+		}
+		items = append(items, view)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		left := items[i].LastEventAt
+		right := items[j].LastEventAt
+		switch {
+		case left == nil && right == nil:
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		case left == nil:
+			return false
+		case right == nil:
+			return true
+		default:
+			return left.After(*right)
+		}
+	})
+	return items, nil
+}
+
+func (s *Service) ListApprovals() ([]models.ApprovalView, error) {
+	state, err := s.loadDashboardState()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]models.ApprovalView, 0, len(state.approvals))
+	for _, approval := range state.approvals {
+		run := state.runByID[approval.RunID]
+		session := state.sessionByID[run.SessionID]
+		host := state.hostByID[run.HostID]
+		items = append(items, models.ApprovalView{
+			Approval:        approval,
+			SessionID:       run.SessionID,
+			SessionTitle:    session.Title,
+			HostID:          run.HostID,
+			HostDisplayName: host.DisplayName,
+			RunStatus:       run.Status,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	return items, nil
+}
+
+func (s *Service) ListSessions() ([]models.SessionView, error) {
+	state, err := s.loadDashboardState()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]models.SessionView, 0, len(state.sessions))
+	for _, session := range state.sessions {
+		host := state.hostByID[session.HostID]
+		latestRun := state.latestRunBySession[session.ID]
+		view := models.SessionView{
+			Session:          session,
+			HostDisplayName:  host.DisplayName,
+			HostMode:         host.Mode,
+			RunStatus:        latestRun.Status,
+			PendingApprovals: state.pendingApprovalCountBySession[session.ID],
+			TurnCount:        len(session.TurnIDs),
+			Preview:          sessionPreview(session),
+			LastEventAt:      runLastActivity(latestRun),
+		}
+		items = append(items, view)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		left := items[i].LastEventAt
+		right := items[j].LastEventAt
+		switch {
+		case left == nil && right == nil:
+			return items[i].UpdatedAt.After(items[j].UpdatedAt)
+		case left == nil:
+			return false
+		case right == nil:
+			return true
+		default:
+			return left.After(*right)
+		}
+	})
+	return items, nil
+}
 
 func (s *Service) UpsertHost(host models.Host) (models.Host, error) {
 	now := time.Now().UTC()
@@ -246,10 +459,15 @@ func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error
 			return models.SessionDetail{}, false, err
 		}
 		items = append(items, models.TurnHistoryItem{
-			Turn:      turn,
-			Run:       run,
-			Events:    runEvents,
-			Approvals: approvalsByRun[turn.RunID],
+			Turn:            turn,
+			Run:             run,
+			Events:          runEvents,
+			Approvals:       approvalsByRun[turn.RunID],
+			ToolEvents:      filterTraceEvents(runEvents),
+			AssistantText:   deriveAssistantText(run, turn, runEvents),
+			ConsoleOutput:   collectConsoleOutput(runEvents),
+			LastEventAt:     latestEventTimestamp(runEvents),
+			WaitingApproval: hasPendingApproval(approvalsByRun[turn.RunID]),
 		})
 	}
 
@@ -384,4 +602,463 @@ func contains(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+type dashboardState struct {
+	hosts                         []models.Host
+	sessions                      []models.Session
+	runs                          []models.Run
+	approvals                     []models.Approval
+	hostByID                      map[string]models.Host
+	sessionByID                   map[string]models.Session
+	runByID                       map[string]models.Run
+	sessionCountByHost            map[string]int
+	runCountByHost                map[string]int
+	activeRunCountByHost          map[string]int
+	pendingApprovalCountByRun     map[string]int
+	pendingApprovalCountByHost    map[string]int
+	pendingApprovalCountBySession map[string]int
+	pendingApprovalCount          int
+	lastRunStatusByHost           map[string]string
+	lastRunAtByHost               map[string]*time.Time
+	latestRunBySession            map[string]models.Run
+}
+
+func (s *Service) loadDashboardState() (dashboardState, error) {
+	hosts, err := s.store.ListHosts()
+	if err != nil {
+		return dashboardState{}, err
+	}
+	sessions, err := s.store.ListSessions()
+	if err != nil {
+		return dashboardState{}, err
+	}
+	runs, err := s.store.ListRuns()
+	if err != nil {
+		return dashboardState{}, err
+	}
+	approvals, err := s.store.ListApprovals()
+	if err != nil {
+		return dashboardState{}, err
+	}
+	state := dashboardState{
+		hosts:                         hosts,
+		sessions:                      sessions,
+		runs:                          runs,
+		approvals:                     approvals,
+		hostByID:                      make(map[string]models.Host, len(hosts)),
+		sessionByID:                   make(map[string]models.Session, len(sessions)),
+		runByID:                       make(map[string]models.Run, len(runs)),
+		sessionCountByHost:            make(map[string]int),
+		runCountByHost:                make(map[string]int),
+		activeRunCountByHost:          make(map[string]int),
+		pendingApprovalCountByRun:     make(map[string]int),
+		pendingApprovalCountByHost:    make(map[string]int),
+		pendingApprovalCountBySession: make(map[string]int),
+		lastRunStatusByHost:           make(map[string]string),
+		lastRunAtByHost:               make(map[string]*time.Time),
+		latestRunBySession:            make(map[string]models.Run),
+	}
+	for _, host := range hosts {
+		state.hostByID[host.ID] = host
+	}
+	for _, session := range sessions {
+		state.sessionByID[session.ID] = session
+		state.sessionCountByHost[session.HostID]++
+	}
+	for _, run := range runs {
+		state.runByID[run.ID] = run
+		state.runCountByHost[run.HostID]++
+		if isActiveRunStatus(run.Status) {
+			state.activeRunCountByHost[run.HostID]++
+		}
+		if current, ok := state.latestRunBySession[run.SessionID]; !ok || run.UpdatedAt.After(current.UpdatedAt) {
+			state.latestRunBySession[run.SessionID] = run
+		}
+		if last := state.lastRunAtByHost[run.HostID]; last == nil || run.UpdatedAt.After(*last) {
+			ts := run.UpdatedAt
+			state.lastRunAtByHost[run.HostID] = &ts
+			state.lastRunStatusByHost[run.HostID] = run.Status
+		}
+	}
+	for _, approval := range approvals {
+		if approval.Decision != "" {
+			continue
+		}
+		state.pendingApprovalCount++
+		state.pendingApprovalCountByRun[approval.RunID]++
+		run := state.runByID[approval.RunID]
+		state.pendingApprovalCountByHost[run.HostID]++
+		state.pendingApprovalCountBySession[run.SessionID]++
+	}
+	return state, nil
+}
+
+func buildCapabilityViews(state dashboardState) []models.CapabilityView {
+	items := make([]models.CapabilityView, 0, 4)
+	items = append(items, models.CapabilityView{
+		ID:            "session-replay",
+		Title:         "会话回放",
+		Description:   fmt.Sprintf("当前持久化了 %d 个 sessions 和 %d 个 runs，可直接回放真实对话历史。", len(state.sessions), len(state.runs)),
+		EvidenceCount: len(state.sessions) + len(state.runs),
+		LastSeenAt:    latestSessionTimestamp(state.sessions),
+	})
+	modeSet := make(map[string]struct{})
+	for _, host := range state.hosts {
+		modeSet[host.Mode] = struct{}{}
+	}
+	items = append(items, models.CapabilityView{
+		ID:            "host-connectivity",
+		Title:         "主机接入",
+		Description:   fmt.Sprintf("已登记 %d 台主机，接入模式覆盖 %s。", len(state.hosts), joinModes(modeSet)),
+		EvidenceCount: len(state.hosts),
+		LastSeenAt:    latestHostTimestamp(state.hosts),
+	})
+	items = append(items, models.CapabilityView{
+		ID:            "approval-flow",
+		Title:         "审批闭环",
+		Description:   fmt.Sprintf("累计记录 %d 条审批，其中 %d 条仍待人工处理。", len(state.approvals), state.pendingApprovalCount),
+		EvidenceCount: len(state.approvals),
+		LastSeenAt:    latestApprovalTimestamp(state.approvals),
+	})
+	toolNames := observedToolNames(state.runs, state.approvals)
+	items = append(items, models.CapabilityView{
+		ID:            "tool-surface",
+		Title:         "已观测工具面",
+		Description:   fmt.Sprintf("真实运行中已出现 %d 种工具：%s。", len(toolNames), joinToolNames(toolNames)),
+		EvidenceCount: len(toolNames),
+		LastSeenAt:    latestRunTimestamp(state.runs),
+	})
+	return items
+}
+
+func filterTraceEvents(events []models.Event) []models.Event {
+	result := make([]models.Event, 0, len(events))
+	for _, event := range events {
+		switch event.Type {
+		case "run.created", "run.running_agent", "run.policy_checked", "run.tool_running", "run.tool_finished", "run.waiting_approval", "run.approval_resolved", "run.completed", "run.failed":
+			result = append(result, event)
+		}
+	}
+	return result
+}
+
+func deriveAssistantText(run models.Run, turn models.Turn, events []models.Event) string {
+	if text := firstNonEmpty(turn.FinalExplanation, run.FinalResponse, run.FailureMessage); text != "" {
+		return text
+	}
+	var delta strings.Builder
+	latestMessage := ""
+	for _, event := range events {
+		switch event.Type {
+		case "run.message_delta":
+			delta.WriteString(event.Message)
+		case "run.assistant_message":
+			if strings.TrimSpace(event.Message) != "" {
+				latestMessage = event.Message
+			}
+		}
+	}
+	return firstNonEmpty(delta.String(), latestMessage)
+}
+
+func collectConsoleOutput(events []models.Event) string {
+	var builder strings.Builder
+	for _, event := range events {
+		switch event.Type {
+		case "run.stdout":
+			builder.WriteString(event.Message)
+		case "run.stderr":
+			builder.WriteString("[stderr] ")
+			builder.WriteString(event.Message)
+		}
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func latestEventTimestamp(events []models.Event) *time.Time {
+	var latest *time.Time
+	for _, event := range events {
+		if latest == nil || event.Timestamp.After(*latest) {
+			ts := event.Timestamp
+			latest = &ts
+		}
+	}
+	return latest
+}
+
+func hasPendingApproval(items []models.Approval) bool {
+	for _, item := range items {
+		if item.Decision == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func runLastActivity(run models.Run) *time.Time {
+	if run.CompletedAt != nil {
+		return cloneTimePtr(run.CompletedAt)
+	}
+	if run.UpdatedAt.IsZero() {
+		return nil
+	}
+	ts := run.UpdatedAt
+	return &ts
+}
+
+func runEventType(run models.Run) string {
+	switch run.Status {
+	case models.RunStatusCompleted:
+		return "run.completed"
+	case models.RunStatusFailed:
+		return "run.failed"
+	case models.RunStatusWaitingApproval:
+		return "run.waiting_approval"
+	default:
+		return "run.updated"
+	}
+}
+
+func sessionPreview(session models.Session) string {
+	return firstNonEmpty(session.LastOutcome, session.Summary, session.LastInput)
+}
+
+func isActiveRunStatus(status string) bool {
+	switch status {
+	case models.RunStatusCreated, models.RunStatusRunningAgent, models.RunStatusToolRunning, models.RunStatusWaitingApproval:
+		return true
+	default:
+		return false
+	}
+}
+
+func observedToolNames(runs []models.Run, approvals []models.Approval) []string {
+	counts := make(map[string]int)
+	for _, run := range runs {
+		for _, rule := range run.PolicyHistory {
+			if name := strings.TrimSpace(rule.Scope); name != "" && !strings.Contains(name, " ") {
+				counts[name]++
+			}
+		}
+		for _, entry := range run.ToolHistory {
+			name := strings.TrimSpace(strings.SplitN(entry, ":", 2)[0])
+			if name != "" {
+				counts[name]++
+			}
+		}
+	}
+	for _, approval := range approvals {
+		if approval.ToolName != "" {
+			counts[approval.ToolName]++
+		}
+	}
+	names := make([]string, 0, len(counts))
+	for name := range counts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func joinModes(items map[string]struct{}) string {
+	if len(items) == 0 {
+		return "暂无主机"
+	}
+	names := make([]string, 0, len(items))
+	for name := range items {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return "暂无主机"
+	}
+	return strings.Join(names, " / ")
+}
+
+func joinToolNames(items []string) string {
+	if len(items) == 0 {
+		return "暂无工具运行证据"
+	}
+	limit := items
+	if len(limit) > 4 {
+		limit = limit[:4]
+	}
+	return strings.Join(limit, " / ")
+}
+
+func latestHostTimestamp(items []models.Host) *time.Time {
+	var latest *time.Time
+	for _, item := range items {
+		if latest == nil || item.UpdatedAt.After(*latest) {
+			ts := item.UpdatedAt
+			latest = &ts
+		}
+	}
+	return latest
+}
+
+func latestSessionTimestamp(items []models.Session) *time.Time {
+	var latest *time.Time
+	for _, item := range items {
+		if latest == nil || item.UpdatedAt.After(*latest) {
+			ts := item.UpdatedAt
+			latest = &ts
+		}
+	}
+	return latest
+}
+
+func latestRunTimestamp(items []models.Run) *time.Time {
+	var latest *time.Time
+	for _, item := range items {
+		activity := runLastActivity(item)
+		if activity == nil {
+			continue
+		}
+		if latest == nil || activity.After(*latest) {
+			ts := *activity
+			latest = &ts
+		}
+	}
+	return latest
+}
+
+func latestApprovalTimestamp(items []models.Approval) *time.Time {
+	var latest *time.Time
+	for _, item := range items {
+		ts := item.CreatedAt
+		if item.ResolvedAt != nil {
+			ts = *item.ResolvedAt
+		}
+		if latest == nil || ts.After(*latest) {
+			copyTS := ts
+			latest = &copyTS
+		}
+	}
+	return latest
+}
+
+func cloneTimePtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	copyValue := *value
+	return &copyValue
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (s *Service) activeGatewayPreset() (models.GatewayPreset, error) {
+	s.settingsMu.RLock()
+	defer s.settingsMu.RUnlock()
+	return activeGatewayPreset(s.gatewayConfig)
+}
+
+func activeGatewayPreset(config models.GatewayConfig) (models.GatewayPreset, error) {
+	currentID := strings.TrimSpace(config.CurrentPresetID)
+	if currentID == "" {
+		return models.GatewayPreset{}, fmt.Errorf("gateway config current preset is empty")
+	}
+	for _, preset := range config.Presets {
+		if preset.ID == currentID {
+			return preset, nil
+		}
+	}
+	return models.GatewayPreset{}, fmt.Errorf("gateway preset %q not found", currentID)
+}
+
+func buildGatewayConfigView(config models.GatewayConfig) models.GatewayConfigView {
+	view := models.GatewayConfigView{
+		CurrentPresetID: config.CurrentPresetID,
+		Presets:         append([]models.GatewayPreset(nil), config.Presets...),
+		UpdatedAt:       config.UpdatedAt,
+	}
+	if active, err := activeGatewayPreset(config); err == nil {
+		copyPreset := active
+		view.CurrentPreset = &copyPreset
+	}
+	return view
+}
+
+func cloneGatewayConfig(config models.GatewayConfig) models.GatewayConfig {
+	cloned := models.GatewayConfig{
+		CurrentPresetID: config.CurrentPresetID,
+		UpdatedAt:       config.UpdatedAt,
+		Presets:         make([]models.GatewayPreset, len(config.Presets)),
+	}
+	copy(cloned.Presets, config.Presets)
+	return cloned
+}
+
+func validateGatewayConfig(next, previous models.GatewayConfig) (models.GatewayConfig, models.GatewayPreset, error) {
+	now := time.Now().UTC()
+	result := models.GatewayConfig{
+		CurrentPresetID: strings.TrimSpace(next.CurrentPresetID),
+		Presets:         make([]models.GatewayPreset, 0, len(next.Presets)),
+		UpdatedAt:       now,
+	}
+	if len(next.Presets) == 0 {
+		return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("at least one gateway preset is required")
+	}
+
+	previousByID := make(map[string]models.GatewayPreset, len(previous.Presets))
+	for _, preset := range previous.Presets {
+		previousByID[preset.ID] = preset
+	}
+
+	seen := make(map[string]struct{}, len(next.Presets))
+	for _, preset := range next.Presets {
+		preset.ID = strings.TrimSpace(preset.ID)
+		preset.Name = strings.TrimSpace(preset.Name)
+		preset.BaseURL = strings.TrimRight(strings.TrimSpace(preset.BaseURL), "/")
+		preset.APIKey = strings.TrimSpace(preset.APIKey)
+		preset.Model = strings.TrimSpace(preset.Model)
+		if preset.ID == "" {
+			preset.ID = models.NewID("gateway")
+		}
+		if _, exists := seen[preset.ID]; exists {
+			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("duplicate gateway preset id: %s", preset.ID)
+		}
+		seen[preset.ID] = struct{}{}
+		if preset.Name == "" {
+			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("gateway preset name is required")
+		}
+		if preset.BaseURL == "" {
+			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("gateway preset %q base_url is required", preset.Name)
+		}
+		if preset.APIKey == "" {
+			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("gateway preset %q api_key is required", preset.Name)
+		}
+		if preset.Model == "" {
+			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("gateway preset %q model is required", preset.Name)
+		}
+		if previousPreset, ok := previousByID[preset.ID]; ok {
+			preset.CreatedAt = previousPreset.CreatedAt
+		}
+		if preset.CreatedAt.IsZero() {
+			preset.CreatedAt = now
+		}
+		preset.UpdatedAt = now
+		result.Presets = append(result.Presets, preset)
+	}
+
+	if result.CurrentPresetID == "" {
+		result.CurrentPresetID = result.Presets[0].ID
+	}
+	activePreset, err := activeGatewayPreset(result)
+	if err != nil {
+		return models.GatewayConfig{}, models.GatewayPreset{}, err
+	}
+	return result, activePreset, nil
 }

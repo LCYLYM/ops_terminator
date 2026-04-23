@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+
+	"osagentmvp/internal/models"
 )
 
 type Config struct {
@@ -39,9 +42,6 @@ func Load(workspaceRoot string) (Config, error) {
 		KnownHostsPath:        strings.TrimSpace(os.Getenv("OSAGENT_KNOWN_HOSTS")),
 	}
 
-	if cfg.APIKey == "" {
-		return Config{}, errors.New("OSAGENT_LLM_API_KEY is required")
-	}
 	if cfg.RequestTimeoutSeconds <= 0 {
 		return Config{}, errors.New("OSAGENT_REQUEST_TIMEOUT_SECONDS must be positive")
 	}
@@ -54,6 +54,25 @@ func Load(workspaceRoot string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func (c Config) DefaultGatewayConfig() models.GatewayConfig {
+	now := time.Now().UTC()
+	return models.GatewayConfig{
+		CurrentPresetID: "default",
+		UpdatedAt:       now,
+		Presets: []models.GatewayPreset{
+			{
+				ID:        "default",
+				Name:      "默认预设",
+				BaseURL:   strings.TrimSpace(c.BaseURL),
+				APIKey:    strings.TrimSpace(c.APIKey),
+				Model:     strings.TrimSpace(c.Model),
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
 }
 
 func (c Config) AbsDataDir() string {

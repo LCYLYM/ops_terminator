@@ -7,6 +7,9 @@ type Store interface {
 	GetHost(id string) (models.Host, bool, error)
 	SaveHost(host models.Host) error
 
+	GetGatewayConfig() (models.GatewayConfig, bool, error)
+	SaveGatewayConfig(config models.GatewayConfig) error
+
 	ListSessions() ([]models.Session, error)
 	GetSession(id string) (models.Session, bool, error)
 	SaveSession(session models.Session) error

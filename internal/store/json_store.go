@@ -40,6 +40,38 @@ func (s *JSONStore) GetHost(id string) (models.Host, bool, error) {
 }
 func (s *JSONStore) SaveHost(host models.Host) error { return saveObject(s, "hosts", host.ID, host) }
 
+func (s *JSONStore) GetGatewayConfig() (models.GatewayConfig, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var zero models.GatewayConfig
+	path := filepath.Join(s.root, "gateway_config.json")
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return zero, false, nil
+		}
+		return zero, false, fmt.Errorf("read %s: %w", path, err)
+	}
+	var item models.GatewayConfig
+	if err := json.Unmarshal(bytes, &item); err != nil {
+		return zero, false, fmt.Errorf("decode %s: %w", path, err)
+	}
+	return item, true, nil
+}
+
+func (s *JSONStore) SaveGatewayConfig(config models.GatewayConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := filepath.Join(s.root, "gateway_config.json")
+	bytes, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal gateway config: %w", err)
+	}
+	return os.WriteFile(path, bytes, 0o644)
+}
+
 func (s *JSONStore) ListSessions() ([]models.Session, error) {
 	return listObjects[models.Session](s, "sessions")
 }

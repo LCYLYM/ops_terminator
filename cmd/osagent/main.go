@@ -192,6 +192,14 @@ func buildService() (*gateway.Service, config.Config, error) {
 	if err != nil {
 		return nil, config.Config{}, err
 	}
+	gatewayConfig, err := loadGatewayConfig(storeImpl, cfg)
+	if err != nil {
+		return nil, config.Config{}, err
+	}
+	activePreset, err := gatewayActivePreset(gatewayConfig)
+	if err != nil {
+		return nil, config.Config{}, err
+	}
 	hub := events.NewHub()
 	logger := log.New(os.Stdout, "[osagent] ", log.LstdFlags|log.Lshortfile)
 	executor := runner.NewExecutor(time.Duration(cfg.RunTimeoutSeconds)*time.Second, cfg.KnownHostsPath)
@@ -202,13 +210,43 @@ func buildService() (*gateway.Service, config.Config, error) {
 		return nil, config.Config{}, err
 	}
 	builder := contextbuilder.NewBuilder(skillCatalog, registry, policyEngine)
-	llmClient := llm.NewClient(cfg.BaseURL, cfg.APIKey, cfg.Model, time.Duration(cfg.RequestTimeoutSeconds)*time.Second)
+	llmClient := llm.NewClient(activePreset.BaseURL, activePreset.APIKey, activePreset.Model, time.Duration(cfg.RequestTimeoutSeconds)*time.Second)
 	service := gateway.NewService(storeImpl, hub, builder, nil, logger)
+	service.SetLLMClient(llmClient)
+	service.SetGatewayConfig(gatewayConfig)
 	approvalManager := approval.NewManager(storeImpl, service)
 	service.SetApprovals(approvalManager)
 	runtime := agent.New(llmClient, registry, policyEngine, approvalManager, service)
 	service.SetRuntime(runtime)
 	return service, cfg, nil
+}
+
+func loadGatewayConfig(storeImpl store.Store, cfg config.Config) (models.GatewayConfig, error) {
+	saved, found, err := storeImpl.GetGatewayConfig()
+	if err != nil {
+		return models.GatewayConfig{}, err
+	}
+	if found {
+		return saved, nil
+	}
+	defaultConfig := cfg.DefaultGatewayConfig()
+	if len(defaultConfig.Presets) == 0 || strings.TrimSpace(defaultConfig.Presets[0].APIKey) == "" {
+		return models.GatewayConfig{}, errors.New("OSAGENT_LLM_API_KEY is required on first startup before gateway presets are saved")
+	}
+	if err := storeImpl.SaveGatewayConfig(defaultConfig); err != nil {
+		return models.GatewayConfig{}, err
+	}
+	return defaultConfig, nil
+}
+
+func gatewayActivePreset(config models.GatewayConfig) (models.GatewayPreset, error) {
+	currentID := strings.TrimSpace(config.CurrentPresetID)
+	for _, preset := range config.Presets {
+		if preset.ID == currentID {
+			return preset, nil
+		}
+	}
+	return models.GatewayPreset{}, fmt.Errorf("gateway preset %q not found", currentID)
 }
 
 func requestAPI(method, path string, body any, target any) error {

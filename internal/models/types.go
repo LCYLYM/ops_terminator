@@ -101,6 +101,72 @@ type Event struct {
 	Timestamp time.Time      `json:"timestamp"`
 }
 
+type CapabilityView struct {
+	ID            string     `json:"id"`
+	Title         string     `json:"title"`
+	Description   string     `json:"description"`
+	EvidenceCount int        `json:"evidence_count"`
+	LastSeenAt    *time.Time `json:"last_seen_at,omitempty"`
+}
+
+type GatewayHealth struct {
+	Status           string           `json:"status"`
+	NoSandbox        bool             `json:"no_sandbox"`
+	PresetID         string           `json:"preset_id,omitempty"`
+	PresetName       string           `json:"preset_name,omitempty"`
+	BaseURL          string           `json:"base_url,omitempty"`
+	Model            string           `json:"model"`
+	PolicySummary    string           `json:"policy_summary"`
+	TotalHosts       int              `json:"total_hosts"`
+	TotalSessions    int              `json:"total_sessions"`
+	TotalRuns        int              `json:"total_runs"`
+	ActiveRuns       int              `json:"active_runs"`
+	PendingApprovals int              `json:"pending_approvals"`
+	Capabilities     []CapabilityView `json:"capabilities,omitempty"`
+}
+
+type HostView struct {
+	Host
+	Status           string     `json:"status"`
+	SessionCount     int        `json:"session_count"`
+	TotalRuns        int        `json:"total_runs"`
+	ActiveRuns       int        `json:"active_runs"`
+	PendingApprovals int        `json:"pending_approvals"`
+	LastRunStatus    string     `json:"last_run_status,omitempty"`
+	LastRunAt        *time.Time `json:"last_run_at,omitempty"`
+}
+
+type SessionView struct {
+	Session
+	HostDisplayName  string     `json:"host_display_name,omitempty"`
+	HostMode         string     `json:"host_mode,omitempty"`
+	RunStatus        string     `json:"run_status,omitempty"`
+	PendingApprovals int        `json:"pending_approvals"`
+	TurnCount        int        `json:"turn_count"`
+	Preview          string     `json:"preview,omitempty"`
+	LastEventAt      *time.Time `json:"last_event_at,omitempty"`
+}
+
+type RunView struct {
+	Run
+	SessionTitle     string     `json:"session_title,omitempty"`
+	SessionPreview   string     `json:"session_preview,omitempty"`
+	HostDisplayName  string     `json:"host_display_name,omitempty"`
+	PendingApprovals int        `json:"pending_approvals"`
+	LatestAssistant  string     `json:"latest_assistant,omitempty"`
+	LastEventAt      *time.Time `json:"last_event_at,omitempty"`
+	LastEventType    string     `json:"last_event_type,omitempty"`
+}
+
+type ApprovalView struct {
+	Approval
+	SessionID       string `json:"session_id,omitempty"`
+	SessionTitle    string `json:"session_title,omitempty"`
+	HostID          string `json:"host_id,omitempty"`
+	HostDisplayName string `json:"host_display_name,omitempty"`
+	RunStatus       string `json:"run_status,omitempty"`
+}
+
 type AuditEntry struct {
 	ID        string         `json:"id"`
 	RunID     string         `json:"run_id"`
@@ -205,10 +271,15 @@ type PolicyRule struct {
 }
 
 type TurnHistoryItem struct {
-	Turn      Turn       `json:"turn"`
-	Run       Run        `json:"run"`
-	Events    []Event    `json:"events"`
-	Approvals []Approval `json:"approvals,omitempty"`
+	Turn            Turn       `json:"turn"`
+	Run             Run        `json:"run"`
+	Events          []Event    `json:"events"`
+	Approvals       []Approval `json:"approvals,omitempty"`
+	ToolEvents      []Event    `json:"tool_events,omitempty"`
+	AssistantText   string     `json:"assistant_text,omitempty"`
+	ConsoleOutput   string     `json:"console_output,omitempty"`
+	LastEventAt     *time.Time `json:"last_event_at,omitempty"`
+	WaitingApproval bool       `json:"waiting_approval,omitempty"`
 }
 
 type SessionDetail struct {
@@ -216,4 +287,27 @@ type SessionDetail struct {
 	Host             Host              `json:"host"`
 	Turns            []TurnHistoryItem `json:"turns"`
 	PendingApprovals []Approval        `json:"pending_approvals"`
+}
+
+type GatewayPreset struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	BaseURL   string    `json:"base_url"`
+	APIKey    string    `json:"api_key"`
+	Model     string    `json:"model"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+type GatewayConfig struct {
+	CurrentPresetID string          `json:"current_preset_id"`
+	Presets         []GatewayPreset `json:"presets"`
+	UpdatedAt       time.Time       `json:"updated_at,omitempty"`
+}
+
+type GatewayConfigView struct {
+	CurrentPresetID string          `json:"current_preset_id"`
+	CurrentPreset   *GatewayPreset  `json:"current_preset,omitempty"`
+	Presets         []GatewayPreset `json:"presets"`
+	UpdatedAt       time.Time       `json:"updated_at,omitempty"`
 }
