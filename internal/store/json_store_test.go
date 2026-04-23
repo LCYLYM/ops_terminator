@@ -47,6 +47,7 @@ func TestJSONStoreGatewayConfigRoundTrip(t *testing.T) {
 	now := time.Now().UTC()
 	config := models.GatewayConfig{
 		CurrentPresetID: "primary",
+		RuntimeSettings: models.DefaultRuntimeSettings(),
 		UpdatedAt:       now,
 		Presets: []models.GatewayPreset{
 			{
@@ -73,5 +74,11 @@ func TestJSONStoreGatewayConfigRoundTrip(t *testing.T) {
 	}
 	if got.CurrentPresetID != "primary" || len(got.Presets) != 1 || got.Presets[0].Model != "LongCat-Flash-Thinking-2601" {
 		t.Fatalf("unexpected gateway config: %+v", got)
+	}
+	if got.RuntimeSettings.ContextSoftLimitTokens != models.DefaultRuntimeSettings().ContextSoftLimitTokens {
+		t.Fatalf("unexpected runtime settings: %+v", got.RuntimeSettings)
+	}
+	if got.RuntimeSettings.MaxAgentSteps != models.DefaultRuntimeSettings().MaxAgentSteps {
+		t.Fatalf("unexpected max agent steps: %+v", got.RuntimeSettings)
 	}
 }

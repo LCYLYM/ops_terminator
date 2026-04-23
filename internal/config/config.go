@@ -34,9 +34,9 @@ func Load(workspaceRoot string) (Config, error) {
 		WorkspaceRoot:         workspaceRoot,
 		DataDir:               envOrDefault("OSAGENT_DATA_DIR", "data"),
 		ServerAddr:            envOrDefault("OSAGENT_SERVER_ADDR", ":7778"),
-		BaseURL:               envOrDefault("OSAGENT_LLM_BASE_URL", "https://api.longcat.chat"),
+		BaseURL:               envOrDefault("OSAGENT_LLM_BASE_URL", "https://api.hbyzn.cn"),
 		APIKey:                strings.TrimSpace(os.Getenv("OSAGENT_LLM_API_KEY")),
-		Model:                 envOrDefault("OSAGENT_LLM_MODEL", "LongCat-Flash-Thinking-2601"),
+		Model:                 envOrDefault("OSAGENT_LLM_MODEL", "qwen3.5-plus-2026-02-15"),
 		RequestTimeoutSeconds: envIntOrDefault("OSAGENT_REQUEST_TIMEOUT_SECONDS", 120),
 		RunTimeoutSeconds:     envIntOrDefault("OSAGENT_RUN_TIMEOUT_SECONDS", 180),
 		KnownHostsPath:        strings.TrimSpace(os.Getenv("OSAGENT_KNOWN_HOSTS")),
@@ -60,6 +60,7 @@ func (c Config) DefaultGatewayConfig() models.GatewayConfig {
 	now := time.Now().UTC()
 	return models.GatewayConfig{
 		CurrentPresetID: "default",
+		RuntimeSettings: models.DefaultRuntimeSettings(),
 		UpdatedAt:       now,
 		Presets: []models.GatewayPreset{
 			{

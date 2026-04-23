@@ -23,6 +23,8 @@
   - 右侧审批列表、run 列表、live trace
   - 全局 SSE 实时刷新
 - 运维 builtins：
+  - 主执行路径：`run_shell`
+  - 高价值快捷能力：
   - `hello_capability`
   - `host_probe`
   - `memory_inspect`
@@ -41,8 +43,10 @@
   - `run_shell`
 - policy：
   - 只读工具直接放行
-  - 变更类工具人工审批
-  - 明显破坏性 shell 直接拒绝
+  - `run_shell` 先做安全解析：显式只读命令直接放行
+  - 可能改写系统状态的 shell 或 builtin 统一进入人工审批
+  - 复杂绕过语法、嵌套解释器、明显破坏性 shell 直接拒绝
+  - 命令结果统一返回 `command / exit_code / duration / stdout / stderr` 结构，超长输出自动截断
 - Web 控制面：host 管理、run 发起、审批处理、事件流回放
 
 ## 运行

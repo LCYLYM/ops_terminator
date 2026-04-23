@@ -38,28 +38,93 @@ type Host struct {
 }
 
 type Session struct {
-	ID          string    `json:"id"`
-	HostID      string    `json:"host_id"`
-	Title       string    `json:"title"`
-	Summary     string    `json:"summary,omitempty"`
-	TurnIDs     []string  `json:"turn_ids,omitempty"`
-	RunIDs      []string  `json:"run_ids,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	LastInput   string    `json:"last_input,omitempty"`
-	LastOutcome string    `json:"last_outcome,omitempty"`
+	ID          string      `json:"id"`
+	HostID      string      `json:"host_id"`
+	Title       string      `json:"title"`
+	Summary     string      `json:"summary,omitempty"`
+	Memory      MemoryState `json:"memory,omitempty"`
+	TurnIDs     []string    `json:"turn_ids,omitempty"`
+	RunIDs      []string    `json:"run_ids,omitempty"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
+	LastInput   string      `json:"last_input,omitempty"`
+	LastOutcome string      `json:"last_outcome,omitempty"`
+}
+
+type RuntimeSettings struct {
+	MaxAgentSteps            int `json:"max_agent_steps"`
+	ContextSoftLimitTokens   int `json:"context_soft_limit_tokens"`
+	CompressionTriggerTokens int `json:"compression_trigger_tokens"`
+	ResponseReserveTokens    int `json:"response_reserve_tokens"`
+	RecentFullTurns          int `json:"recent_full_turns"`
+	OlderUserLedgerEntries   int `json:"older_user_ledger_entries"`
+	HostProfileTTLMinutes    int `json:"host_profile_ttl_minutes"`
+	ToolResultMaxChars       int `json:"tool_result_max_chars"`
+	ToolResultHeadChars      int `json:"tool_result_head_chars"`
+	ToolResultTailChars      int `json:"tool_result_tail_chars"`
+}
+
+type HostProfile struct {
+	Hostname     string   `json:"hostname,omitempty"`
+	Kernel       string   `json:"kernel,omitempty"`
+	Distro       string   `json:"distro,omitempty"`
+	Shell        string   `json:"shell,omitempty"`
+	User         string   `json:"user,omitempty"`
+	HomeDir      string   `json:"home_dir,omitempty"`
+	WorkingDir   string   `json:"working_dir,omitempty"`
+	PathPreview  string   `json:"path_preview,omitempty"`
+	InitSystem   string   `json:"init_system,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	Summary      string   `json:"summary,omitempty"`
+	Raw          string   `json:"raw,omitempty"`
+	Stale        bool     `json:"stale,omitempty"`
+}
+
+type MemoryState struct {
+	RollingSummary        string      `json:"rolling_summary,omitempty"`
+	CompressedUntilTurnID string      `json:"compressed_until_turn_id,omitempty"`
+	OlderUserLedger       []string    `json:"older_user_ledger,omitempty"`
+	OpenThreads           []string    `json:"open_threads,omitempty"`
+	HostProfile           HostProfile `json:"host_profile,omitempty"`
+	LastCompactedAt       *time.Time  `json:"last_compacted_at,omitempty"`
+	LastHostProfileAt     *time.Time  `json:"last_host_profile_at,omitempty"`
+	ProfileStale          bool        `json:"profile_stale,omitempty"`
+}
+
+type ToolExecutionRecord struct {
+	ToolName       string `json:"tool_name"`
+	ToolCallID     string `json:"tool_call_id,omitempty"`
+	CommandPreview string `json:"command_preview,omitempty"`
+	RawResult      string `json:"raw_result,omitempty"`
+	ModelResult    string `json:"model_result,omitempty"`
+	Truncated      bool   `json:"truncated,omitempty"`
+	RawChars       int    `json:"raw_chars,omitempty"`
+	ModelChars     int    `json:"model_chars,omitempty"`
+	OmittedChars   int    `json:"omitted_chars,omitempty"`
+}
+
+type PromptStats struct {
+	EstimatedPromptTokensBeforeCompression int  `json:"estimated_prompt_tokens_before_compression,omitempty"`
+	EstimatedPromptTokens                  int  `json:"estimated_prompt_tokens,omitempty"`
+	CompressionTriggered                   bool `json:"compression_triggered,omitempty"`
+	CompressedTurnCount                    int  `json:"compressed_turn_count,omitempty"`
+	RecentFullTurnCount                    int  `json:"recent_full_turn_count,omitempty"`
+	MessageCount                           int  `json:"message_count,omitempty"`
 }
 
 type Turn struct {
-	ID               string          `json:"id"`
-	SessionID        string          `json:"session_id"`
-	HostID           string          `json:"host_id"`
-	UserInput        string          `json:"user_input"`
-	ContextSnapshot  ContextSnapshot `json:"context_snapshot"`
-	FinalExplanation string          `json:"final_explanation,omitempty"`
-	RunID            string          `json:"run_id"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	ID               string                `json:"id"`
+	SessionID        string                `json:"session_id"`
+	HostID           string                `json:"host_id"`
+	UserInput        string                `json:"user_input"`
+	ContextSnapshot  ContextSnapshot       `json:"context_snapshot"`
+	FinalExplanation string                `json:"final_explanation,omitempty"`
+	Messages         []ChatMessage         `json:"messages,omitempty"`
+	ToolResults      []ToolExecutionRecord `json:"tool_results,omitempty"`
+	PromptStats      PromptStats           `json:"prompt_stats,omitempty"`
+	RunID            string                `json:"run_id"`
+	CreatedAt        time.Time             `json:"created_at"`
+	UpdatedAt        time.Time             `json:"updated_at"`
 }
 
 type Run struct {
@@ -197,13 +262,17 @@ type SkillSummary struct {
 }
 
 type ContextSnapshot struct {
-	HostID           string         `json:"host_id"`
-	HostDisplayName  string         `json:"host_display_name"`
-	HostMode         string         `json:"host_mode"`
-	SessionSummary   string         `json:"session_summary,omitempty"`
-	PolicySummary    string         `json:"policy_summary"`
-	SkillSummaries   []SkillSummary `json:"skill_summaries,omitempty"`
-	BuiltinSummaries []ToolSummary  `json:"builtin_summaries,omitempty"`
+	HostID             string         `json:"host_id"`
+	HostDisplayName    string         `json:"host_display_name"`
+	HostMode           string         `json:"host_mode"`
+	SessionSummary     string         `json:"session_summary,omitempty"`
+	HostProfileSummary string         `json:"host_profile_summary,omitempty"`
+	RollingSummary     string         `json:"rolling_summary,omitempty"`
+	OlderUserLedger    []string       `json:"older_user_ledger,omitempty"`
+	OpenThreads        []string       `json:"open_threads,omitempty"`
+	PolicySummary      string         `json:"policy_summary"`
+	SkillSummaries     []SkillSummary `json:"skill_summaries,omitempty"`
+	BuiltinSummaries   []ToolSummary  `json:"builtin_summaries,omitempty"`
 }
 
 type ToolSummary struct {
@@ -285,6 +354,7 @@ type TurnHistoryItem struct {
 type SessionDetail struct {
 	Session          Session           `json:"session"`
 	Host             Host              `json:"host"`
+	Memory           MemoryState       `json:"memory,omitempty"`
 	Turns            []TurnHistoryItem `json:"turns"`
 	PendingApprovals []Approval        `json:"pending_approvals"`
 }
@@ -302,6 +372,7 @@ type GatewayPreset struct {
 type GatewayConfig struct {
 	CurrentPresetID string          `json:"current_preset_id"`
 	Presets         []GatewayPreset `json:"presets"`
+	RuntimeSettings RuntimeSettings `json:"runtime_settings,omitempty"`
 	UpdatedAt       time.Time       `json:"updated_at,omitempty"`
 }
 
@@ -309,5 +380,38 @@ type GatewayConfigView struct {
 	CurrentPresetID string          `json:"current_preset_id"`
 	CurrentPreset   *GatewayPreset  `json:"current_preset,omitempty"`
 	Presets         []GatewayPreset `json:"presets"`
+	RuntimeSettings RuntimeSettings `json:"runtime_settings,omitempty"`
 	UpdatedAt       time.Time       `json:"updated_at,omitempty"`
+}
+
+type ConversationContext struct {
+	Session         Session         `json:"session"`
+	CurrentTurn     Turn            `json:"current_turn"`
+	HistoricalTurns []Turn          `json:"historical_turns,omitempty"`
+	RuntimeSettings RuntimeSettings `json:"runtime_settings"`
+}
+
+type ExecutionResult struct {
+	FinalResponse string                `json:"final_response"`
+	ToolHistory   []string              `json:"tool_history,omitempty"`
+	PolicyHistory []PolicyRule          `json:"policy_history,omitempty"`
+	Messages      []ChatMessage         `json:"messages,omitempty"`
+	ToolResults   []ToolExecutionRecord `json:"tool_results,omitempty"`
+	PromptStats   PromptStats           `json:"prompt_stats,omitempty"`
+	Memory        MemoryState           `json:"memory,omitempty"`
+}
+
+func DefaultRuntimeSettings() RuntimeSettings {
+	return RuntimeSettings{
+		MaxAgentSteps:            20,
+		ContextSoftLimitTokens:   20000,
+		CompressionTriggerTokens: 16000,
+		ResponseReserveTokens:    4000,
+		RecentFullTurns:          2,
+		OlderUserLedgerEntries:   6,
+		HostProfileTTLMinutes:    30,
+		ToolResultMaxChars:       6000,
+		ToolResultHeadChars:      4000,
+		ToolResultTailChars:      1200,
+	}
 }

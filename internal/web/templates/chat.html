@@ -1,241 +1,100 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8"/>
-  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-  <title>运维控制台 - 对话</title>
-  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
-  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
-  <script id="tailwind-config">
-    tailwind.config = {
-      darkMode: "class",
-      theme: {
-        extend: {
-          "colors": {
-            "secondary": "#5f5f56",
-            "primary": "#9a4021",
-            "on-surface-variant": "#56423c",
-            "on-secondary-fixed": "#1c1c15",
-            "surface-variant": "#e5e2df",
-            "primary-fixed-dim": "#ffb59d",
-            "outline": "#89726b",
-            "surface-dim": "#dcdad6",
-            "on-primary-container": "#fffbff",
-            "surface-container-low": "#f6f3f0",
-            "surface": "#fcf9f5",
-            "on-primary-fixed-variant": "#7e2c0e",
-            "secondary-container": "#e5e3d8",
-            "error-container": "#ffdad6",
-            "on-tertiary-fixed": "#002020",
-            "error": "#ba1a1a",
-            "secondary-fixed-dim": "#c8c7bc",
-            "tertiary-fixed": "#89f4f4",
-            "surface-bright": "#fcf9f5",
-            "inverse-on-surface": "#f3f0ed",
-            "on-surface": "#1c1c1a",
-            "primary-container": "#b95837",
-            "tertiary-container": "#008283",
-            "on-primary-fixed": "#390b00",
-            "on-background": "#1c1c1a",
-            "surface-container-highest": "#e5e2df",
-            "on-tertiary-container": "#f3fffe",
-            "on-error": "#ffffff",
-            "inverse-surface": "#31302e",
-            "surface-container-lowest": "#ffffff",
-            "primary-fixed": "#ffdbd0",
-            "on-secondary": "#ffffff",
-            "on-error-container": "#93000a",
-            "on-secondary-container": "#65655c",
-            "secondary-fixed": "#e5e3d8",
-            "on-secondary-fixed-variant": "#47473f",
-            "surface-container-high": "#eae8e4",
-            "outline-variant": "#dcc1b8",
-            "tertiary-fixed-dim": "#6cd7d8",
-            "on-tertiary": "#ffffff",
-            "on-primary": "#ffffff",
-            "surface-container": "#f0edea",
-            "tertiary": "#006768",
-            "surface-tint": "#9d4324",
-            "inverse-primary": "#ffb59d",
-            "background": "#fcf9f5",
-            "on-tertiary-fixed-variant": "#004f50"
-          },
-          "borderRadius": {
-            "DEFAULT": "0.25rem",
-            "lg": "0.5rem",
-            "xl": "0.75rem",
-            "full": "9999px"
-          },
-          "spacing": {
-            "lg": "24px",
-            "sm": "8px",
-            "gutter": "24px",
-            "md": "16px",
-            "xl": "40px",
-            "unit": "4px",
-            "container-max": "1120px",
-            "xs": "4px",
-            "2xl": "64px"
-          },
-          "fontFamily": {
-            "body-md": ["Inter"],
-            "h1": ["Manrope"],
-            "label": ["Inter"],
-            "h2": ["Manrope"],
-            "body-lg": ["Inter"],
-            "h3": ["Manrope"],
-            "body-sm": ["Inter"]
-          },
-          "fontSize": {
-            "body-md": ["16px", {"lineHeight": "1.6", "fontWeight": "400"}],
-            "h1": ["40px", {"lineHeight": "1.2", "letterSpacing": "-0.02em", "fontWeight": "600"}],
-            "label": ["13px", {"lineHeight": "1.2", "letterSpacing": "0.05em", "fontWeight": "500"}],
-            "h2": ["32px", {"lineHeight": "1.3", "fontWeight": "600"}],
-            "body-lg": ["18px", {"lineHeight": "1.7", "fontWeight": "400"}],
-            "h3": ["24px", {"lineHeight": "1.4", "fontWeight": "500"}],
-            "body-sm": ["14px", {"lineHeight": "1.5", "fontWeight": "400"}]
-          }
-        }
-      }
-    }
-  </script>
-  <link href="/static/app.css" rel="stylesheet"/>
-</head>
-<body class="app-page text-on-surface font-body-md text-body-md antialiased" data-page="chat">
-  <div class="app-shell">
-    <aside class="app-sidebar app-sidebar--chat">
-      <div class="app-brand">
-        <div class="app-brand-icon">
-          <span class="material-symbols-outlined">chat</span>
-        </div>
-        <div>
-          <p class="app-brand-title">运维控制台</p>
-          <p class="app-brand-subtitle">静谧的智慧</p>
-        </div>
-      </div>
+{{ define "sidebar_extra" -}}
+  <section class="app-sidebar-panel">
+    <div class="app-sidebar-panel-head">
+      <h2>会话</h2>
+      <span id="chat-session-count" class="app-count-badge">0</span>
+    </div>
+    <div id="chat-session-list" class="app-session-list"></div>
+  </section>
+{{- end }}
 
-      <div class="app-sidebar-cta">
-        <button class="app-primary-button" id="new-session-button" type="button">
-          <span class="material-symbols-outlined text-[20px]">add</span>
-          <span>新建会话</span>
-        </button>
-      </div>
-
-      <nav class="app-nav">
-        <a class="app-nav-item is-active" href="/">
-          <span class="material-symbols-outlined text-[20px]">chat</span>
-          <span>对话历史</span>
-        </a>
-        <a class="app-nav-item" href="/assets">
-          <span class="material-symbols-outlined text-[20px]">inventory_2</span>
-          <span>资产管理</span>
-        </a>
-        <a class="app-nav-item" href="/automation">
-          <span class="material-symbols-outlined text-[20px]">robot_2</span>
-          <span>自动化工作流</span>
-        </a>
-        <a class="app-nav-item" href="/settings">
-          <span class="material-symbols-outlined text-[20px]">settings</span>
-          <span>系统设置</span>
-        </a>
-      </nav>
-
-      <div class="app-sidebar-footer app-sidebar-footer--links">
-        <a class="app-sidebar-link" href="#">
-          <span class="material-symbols-outlined text-[18px]">menu_book</span>
-          <span>文档中心</span>
-        </a>
-        <a class="app-sidebar-link" href="#">
-          <span class="material-symbols-outlined text-[18px]">help_outline</span>
-          <span>系统支持</span>
-        </a>
-      </div>
-    </aside>
-
-    <div class="app-shell-main">
-      <header class="app-topbar">
-        <div class="app-topbar-left">
-          <div class="app-topbar-heading">控制台概览</div>
-          <nav class="app-topbar-nav">
-            <a href="/automation">仪表盘</a>
-            <a href="/automation">监控</a>
-            <a href="/automation">日志</a>
-          </nav>
-        </div>
-        <div class="app-topbar-right">
-          <button class="app-icon-button" type="button">
-            <span class="material-symbols-outlined">notifications</span>
-          </button>
-          <button class="app-icon-button" type="button">
-            <span class="material-symbols-outlined">account_circle</span>
-          </button>
-        </div>
-      </header>
-
-      <main class="app-content app-content--chat">
-        <div class="app-content-inner app-content-inner--chat">
-          <div class="app-chat-layout">
-            <section class="app-chat-main">
-              <div class="app-chat-scroll">
-                <div class="app-chat-column" id="chat-history"></div>
-              </div>
-
-              <div class="app-chat-input-zone">
-                <div class="app-chat-input-inner">
-                  <form class="bg-surface-container-lowest border border-[#E2E2DB] shadow-sm focus-within:border-[#C96442] focus-within:ring-1 focus-within:ring-[#C96442] transition-all" id="chat-form">
-                    <textarea class="w-full bg-transparent border-none font-body-md text-body-md text-on-surface placeholder:text-outline-variant resize-none focus:ring-0" id="chat-input" placeholder="输入运维指令或问题..." rows="1"></textarea>
-                    <button class="absolute bg-[#F5F4ED] hover:bg-[#E6E4D9] text-[#C96442] transition-colors flex items-center justify-center" type="submit">
-                      <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">send</span>
-                    </button>
-                  </form>
-                  <div class="app-chat-helper">AI 助手可能会犯错，请在执行危险操作前核对信息。</div>
-                </div>
-              </div>
-            </section>
-
-            <aside class="app-chat-sidebar">
-              <div class="app-chat-sidebar-head">
-                <h3 class="app-card-title">系统概览</h3>
-                <p class="app-card-subtitle">实时环境状态监控</p>
-              </div>
-
-              <div class="app-chat-sidebar-body">
-                <div>
-                  <div class="flex items-center justify-between mb-3">
-                    <span class="font-label text-label text-secondary uppercase tracking-wider">网关健康度</span>
-                    <span class="flex items-center gap-xs font-body-sm text-body-sm text-tertiary-container" id="gateway-health-text">
-                      <span class="w-2 h-2 rounded-full bg-tertiary-container"></span>
-                      正常
-                    </span>
-                  </div>
-                  <div class="app-chat-panel">
-                    <div class="flex items-center justify-between gap-4">
-                      <div class="flex items-center gap-sm">
-                        <span class="material-symbols-outlined text-outline">router</span>
-                        <span class="font-body-sm text-body-sm text-on-surface">API Gateway Pro</span>
-                      </div>
-                      <span class="font-mono text-xs text-secondary" id="gateway-health-meta">warming...</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <div class="flex items-center justify-between mb-3">
-                    <span class="font-label text-label text-secondary uppercase tracking-wider">待处理任务</span>
-                    <span class="bg-[#E6E4D9] text-[#C96442] px-2 py-0.5 rounded-full font-label text-[11px]" id="approval-count">0 项</span>
-                  </div>
-                  <ul id="approval-list"></ul>
-                </div>
-              </div>
-            </aside>
+{{ define "page_content" -}}
+  <div class="app-content-inner app-content-inner--chat">
+    <div class="app-chat-layout">
+      <section class="app-chat-main">
+        <div class="app-chat-conversation-head">
+          <div>
+            <p class="app-section-kicker">当前会话</p>
+            <h2 id="chat-conversation-title">选择或创建一段运维会话</h2>
+            <p id="chat-conversation-summary" class="app-section-subtitle">左侧会话列表来自真实 session 记录，新请求会创建新的对话上下文。</p>
+            <p id="chat-memory-status" class="app-section-subtitle">多轮记忆状态将在真实会话后显示。</p>
+          </div>
+          <div class="app-chat-conversation-meta">
+            <span id="chat-conversation-host" class="app-status-pill">No host</span>
+            <span id="chat-conversation-run" class="app-status-pill">No active run</span>
+            <span id="chat-conversation-budget" class="app-status-pill">Max steps --</span>
           </div>
         </div>
-      </main>
+
+        <div class="app-chat-scroll">
+          <div class="app-chat-column" id="chat-history"></div>
+        </div>
+
+        <div class="app-chat-input-zone">
+          <div class="app-chat-input-inner">
+            <div class="app-chat-composer-bar">
+              <label class="app-chat-host-picker" for="chat-host-select">
+                <span>目标主机</span>
+                <select id="chat-host-select"></select>
+              </label>
+              <span id="chat-host-selection-label" class="app-chat-host-selection-label">等待加载主机...</span>
+            </div>
+            <form id="chat-form" class="bg-surface-container-lowest border border-[#E2E2DB] shadow-sm focus-within:border-[#C96442] focus-within:ring-1 focus-within:ring-[#C96442] transition-all">
+              <textarea id="chat-input" class="w-full bg-transparent border-none font-body-md text-body-md text-on-surface placeholder:text-outline-variant resize-none focus:ring-0" placeholder="输入运维指令或问题..." rows="1"></textarea>
+              <button class="absolute bg-[#F5F4ED] hover:bg-[#E6E4D9] text-[#C96442] transition-colors flex items-center justify-center" type="submit">
+                <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">send</span>
+              </button>
+            </form>
+            <p id="chat-composer-note" class="app-chat-helper">所有请求都经过统一 gateway、policy 和真实执行链路。</p>
+          </div>
+        </div>
+      </section>
+
+      <aside class="app-chat-sidebar">
+        <section class="app-side-panel app-side-panel--overview">
+          <div class="app-side-panel-head">
+            <h3>会话概览</h3>
+            <span id="chat-health-status" class="app-status-inline">检查中</span>
+          </div>
+          <div class="app-side-panel-body">
+            <div class="app-chat-panel">
+              <div class="app-side-panel-metric-label">当前预设 / 模型</div>
+              <div id="chat-health-model" class="app-side-panel-metric-value">加载中...</div>
+              <p id="chat-health-summary" class="app-side-panel-text">正在读取真实健康数据。</p>
+            </div>
+            <div class="app-chat-panel app-chat-panel--compact">
+              <div class="app-side-panel-metric-label">审批入口</div>
+              <div id="chat-approval-summary" class="app-side-panel-metric-value">加载中...</div>
+              <p id="chat-approval-note" class="app-side-panel-text">审批动作已经迁移到对话流中的审批卡片。</p>
+            </div>
+            <div class="app-mini-stats app-mini-stats--four">
+              <div class="app-mini-stat">
+                <span class="app-mini-stat-label">Turns</span>
+                <span id="chat-session-turns" class="app-mini-stat-value">0</span>
+              </div>
+              <div class="app-mini-stat">
+                <span class="app-mini-stat-label">Pending</span>
+                <span id="chat-session-pending" class="app-mini-stat-value">0</span>
+              </div>
+              <div class="app-mini-stat">
+                <span class="app-mini-stat-label">Tools</span>
+                <span id="chat-session-tools" class="app-mini-stat-value">0</span>
+              </div>
+              <div class="app-mini-stat">
+                <span class="app-mini-stat-label">Prompt</span>
+                <span id="chat-session-prompt" class="app-mini-stat-value">--</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="app-side-panel app-side-panel--trace">
+          <div class="app-side-panel-head">
+            <h3>Live Trace</h3>
+          </div>
+          <pre id="chat-live-trace" class="app-trace">选择会话后显示实时事件回放。</pre>
+        </section>
+      </aside>
     </div>
   </div>
-
-  <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
-  <script src="/static/app.js"></script>
-</body>
-</html>
+{{- end }}

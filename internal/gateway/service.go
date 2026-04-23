@@ -1198,6 +1198,9 @@ func validateGatewayConfig(next, previous models.GatewayConfig) (models.GatewayC
 
 func normalizeRuntimeSettings(settings models.RuntimeSettings) models.RuntimeSettings {
 	defaults := models.DefaultRuntimeSettings()
+	if settings.MaxAgentSteps <= 0 {
+		settings.MaxAgentSteps = defaults.MaxAgentSteps
+	}
 	if settings.ContextSoftLimitTokens <= 0 {
 		settings.ContextSoftLimitTokens = defaults.ContextSoftLimitTokens
 	}

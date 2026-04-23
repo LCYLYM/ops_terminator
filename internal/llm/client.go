@@ -108,10 +108,12 @@ func (c *Client) StreamChatCompletion(ctx context.Context, messages []models.Cha
 		Model:       model,
 		Messages:    messages,
 		Tools:       tools,
-		ToolChoice:  "auto",
 		Stream:      true,
 		MaxTokens:   4096,
 		Temperature: 0.2,
+	}
+	if len(tools) > 0 {
+		requestBody.ToolChoice = "auto"
 	}
 	body, err := json.Marshal(requestBody)
 	if err != nil {
@@ -215,10 +217,15 @@ func (c *Client) StreamChatCompletion(ctx context.Context, messages []models.Cha
 }
 
 func chatCompletionsURL(baseURL string) string {
-	if strings.HasSuffix(baseURL, "/openai") {
-		return baseURL + "/v1/chat/completions"
+	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	switch {
+	case strings.HasSuffix(trimmed, "/v1/chat/completions"):
+		return trimmed
+	case strings.HasSuffix(trimmed, "/v1"):
+		return trimmed + "/chat/completions"
+	default:
+		return trimmed + "/v1/chat/completions"
 	}
-	return baseURL + "/openai/v1/chat/completions"
 }
 
 func (c *Client) readAPIError(resp *http.Response) error {

@@ -4,9 +4,8 @@
   "description": "用于定位端口占用、服务冲突和是否需要重启。",
   "intent_examples": ["80 端口占用", "nginx 起不来", "端口冲突", "服务是否要重启"],
   "risk_category": "medium",
-  "recommended_investigation_flow": ["port_inspect", "process_search", "service_status_inspect", "file_log_search"],
-  "decision_hints": ["先查占用进程归属", "没确认影响前不要先重启"],
+  "recommended_investigation_flow": ["run_shell", "service_status_inspect", "file_log_search", "port_inspect"],
+  "decision_hints": ["先查占用进程归属", "优先用 run_shell 执行 ss / lsof / ps 这类显式只读命令", "没确认影响前不要先重启"],
   "explanation_hints": ["解释端口、进程、服务状态之间的关系"],
   "safer_alternatives": ["优先只读检查，确认影响面后再审批重启"]
 }
-

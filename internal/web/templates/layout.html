@@ -1,0 +1,75 @@
+{{ define "layout" -}}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ .Title }} - 运维控制台</title>
+  {{ template "head" . }}
+</head>
+<body class="app-page {{ .BodyClass }}" data-page="{{ .PageKey }}">
+  <div class="app-shell">
+    <aside class="app-sidebar">
+      <div class="app-brand">
+        <div class="app-brand-icon">
+          <span class="material-symbols-outlined">terminal</span>
+        </div>
+        <div>
+          <p class="app-brand-title">运维控制台</p>
+          <p class="app-brand-subtitle">真实执行，不留假入口</p>
+        </div>
+      </div>
+
+      {{ if .SidebarAction }}
+      <div class="app-sidebar-cta">
+        {{ template "action_button" .SidebarAction }}
+      </div>
+      {{ end }}
+
+      <nav class="app-nav" aria-label="主导航">
+        {{ range .NavItems }}
+        <a class="app-nav-item{{ if .Active }} is-active{{ end }}" href="{{ .Href }}">
+          <span class="material-symbols-outlined">{{ .Icon }}</span>
+          <span>{{ .Label }}</span>
+        </a>
+        {{ end }}
+      </nav>
+
+      {{ block "sidebar_extra" . }}{{ end }}
+
+      <div class="app-sidebar-footer">
+        <div class="app-sidebar-status">
+          <div class="app-sidebar-status-head">
+            <span id="shell-health-label">网关检查中</span>
+            <span id="shell-health-indicator" class="app-sidebar-status-dot"></span>
+          </div>
+          <div id="shell-health-model" class="app-sidebar-status-meta">等待健康数据</div>
+          <div id="shell-health-summary" class="app-sidebar-status-summary">真实接口、真实执行、统一控制面。</div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="app-shell-main">
+      <header class="app-topbar">
+        <div class="app-topbar-copy">
+          <p class="app-topbar-kicker">OS Agent MVP</p>
+          <h1 class="app-topbar-title">{{ .Title }}</h1>
+          <p class="app-topbar-subtitle">{{ .Subtitle }}</p>
+        </div>
+        <div class="app-topbar-actions">
+          {{ block "topbar_extra" . }}{{ end }}
+          {{ if .PrimaryAction }}
+          {{ template "action_button" .PrimaryAction }}
+          {{ end }}
+        </div>
+      </header>
+
+      <main class="app-content{{ if eq .PageKey "chat" }} app-content--chat{{ end }}">
+        {{ block "page_content" . }}{{ end }}
+      </main>
+    </div>
+  </div>
+  {{ template "scripts" . }}
+</body>
+</html>
+{{- end }}

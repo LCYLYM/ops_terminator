@@ -4,8 +4,8 @@
   "description": "用于在重启服务前评估状态、日志、端口和影响面。",
   "intent_examples": ["重启服务", "restart nginx", "要不要重启", "服务异常"],
   "risk_category": "high",
-  "recommended_investigation_flow": ["service_status_inspect", "port_inspect", "journal_log_search", "restart_service"],
-  "decision_hints": ["先查状态和日志，再决定是否重启", "重启必须审批"],
+  "recommended_investigation_flow": ["run_shell", "service_status_inspect", "journal_log_search", "restart_service"],
+  "decision_hints": ["先查状态和日志，再决定是否重启", "能用 run_shell 明确表达的 status / port / journal 诊断优先执行", "重启必须审批"],
   "explanation_hints": ["先讲风险，再讲为什么需要或不需要重启"],
   "safer_alternatives": ["优先检查日志和端口，再审批重启动作"]
 }

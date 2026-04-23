@@ -13,21 +13,27 @@ import (
 )
 
 type ExecutionContext struct {
-	Runner *runner.Executor
-	Stream runner.StreamSink
+	Runner   *runner.Executor
+	Stream   runner.StreamSink
+	Settings models.RuntimeSettings
 }
 
 type Tool interface {
 	Definition() models.ToolDefinition
 	Summary() models.ToolSummary
 	Preview(arguments string) (models.ActionPreview, error)
-	Execute(context.Context, models.Host, ExecutionContext, string) (string, error)
+	Execute(context.Context, models.Host, ExecutionContext, string) (models.ToolExecutionRecord, error)
 }
 
 type Registry struct {
 	executor *runner.Executor
 	tools    map[string]Tool
 }
+
+const (
+	maxShellCommandLength = 4096
+	maxCommandLabelChars  = 240
+)
 
 func NewRegistry(executor *runner.Executor) *Registry {
 	registry := &Registry{
@@ -91,12 +97,27 @@ func (r *Registry) Preview(call models.ToolCall) (models.ActionPreview, error) {
 	return tool.Preview(call.Function.Arguments)
 }
 
-func (r *Registry) Execute(ctx context.Context, host models.Host, call models.ToolCall, stream runner.StreamSink) (string, error) {
+func (r *Registry) Execute(ctx context.Context, host models.Host, call models.ToolCall, stream runner.StreamSink, settings models.RuntimeSettings) (models.ToolExecutionRecord, error) {
 	tool, ok := r.tools[call.Function.Name]
 	if !ok {
-		return "", fmt.Errorf("unknown tool %q", call.Function.Name)
+		return models.ToolExecutionRecord{}, fmt.Errorf("unknown tool %q", call.Function.Name)
 	}
-	return tool.Execute(ctx, host, ExecutionContext{Runner: r.executor, Stream: stream}, call.Function.Arguments)
+	record, err := tool.Execute(ctx, host, ExecutionContext{Runner: r.executor, Stream: stream, Settings: settings}, call.Function.Arguments)
+	if record.ToolName == "" {
+		record.ToolName = call.Function.Name
+	}
+	if record.ToolCallID == "" {
+		record.ToolCallID = call.ID
+	}
+	return record, err
+}
+
+func (r *Registry) ProbeHostProfile(ctx context.Context, host models.Host) (models.HostProfile, error) {
+	result, err := r.executor.Run(ctx, host, hostProfileCommand(), nil)
+	if err != nil {
+		return models.HostProfile{}, err
+	}
+	return parseHostProfile(result.Stdout, result.Stderr), nil
 }
 
 type staticTool struct{}
@@ -122,8 +143,15 @@ func (t *staticTool) Summary() models.ToolSummary {
 func (t *staticTool) Preview(string) (models.ActionPreview, error) {
 	return models.ActionPreview{ToolName: "hello_capability", ReadOnly: true}, nil
 }
-func (t *staticTool) Execute(context.Context, models.Host, ExecutionContext, string) (string, error) {
-	return "I can inspect host facts, memory, disk, ports, processes, services, package managers, users, journals, directory usage, and logs. I can also create users, delete users, restart services, or run custom shell commands, but mutating operations require approval and destructive shell commands are denied.", nil
+func (t *staticTool) Execute(context.Context, models.Host, ExecutionContext, string) (models.ToolExecutionRecord, error) {
+	result := "The primary execution path is run_shell with policy review and structured output. Builtin tools remain available as safer shortcuts for common host diagnostics, user lifecycle changes, service restarts, and targeted log/status inspection."
+	return models.ToolExecutionRecord{
+		ToolName:    "hello_capability",
+		RawResult:   result,
+		ModelResult: result,
+		RawChars:    len(result),
+		ModelChars:  len(result),
+	}, nil
 }
 
 type readOnlyCommandTool struct {
@@ -150,14 +178,13 @@ func (t *readOnlyCommandTool) Definition() models.ToolDefinition {
 	}
 }
 func (t *readOnlyCommandTool) Summary() models.ToolSummary {
-	return models.ToolSummary{Name: t.name, Description: t.description, ReadOnly: true}
+	return models.ToolSummary{Name: t.name, Description: t.description + " Prebuilt diagnostic shortcut.", ReadOnly: true}
 }
 func (t *readOnlyCommandTool) Preview(string) (models.ActionPreview, error) {
 	return models.ActionPreview{ToolName: t.name, ReadOnly: true, CommandPreview: t.command}, nil
 }
-func (t *readOnlyCommandTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, _ string) (string, error) {
-	result, err := execCtx.Runner.Run(ctx, host, t.command, execCtx.Stream)
-	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+func (t *readOnlyCommandTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, _ string) (models.ToolExecutionRecord, error) {
+	return executePreviewCommand(ctx, host, execCtx, models.ActionPreview{ToolName: t.name, ReadOnly: true, CommandPreview: t.command})
 }
 
 type parameterizedReadTool struct {
@@ -189,7 +216,7 @@ func (t *parameterizedReadTool) Definition() models.ToolDefinition {
 	}
 }
 func (t *parameterizedReadTool) Summary() models.ToolSummary {
-	return models.ToolSummary{Name: t.name, Description: t.description, ReadOnly: true}
+	return models.ToolSummary{Name: t.name, Description: t.description + " Prebuilt diagnostic shortcut.", ReadOnly: true}
 }
 func (t *parameterizedReadTool) Preview(arguments string) (models.ActionPreview, error) {
 	command := t.baseCommand
@@ -198,13 +225,12 @@ func (t *parameterizedReadTool) Preview(arguments string) (models.ActionPreview,
 	}
 	return models.ActionPreview{ToolName: t.name, ReadOnly: true, CommandPreview: command}, nil
 }
-func (t *parameterizedReadTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+func (t *parameterizedReadTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (models.ToolExecutionRecord, error) {
 	preview, err := t.Preview(arguments)
 	if err != nil {
-		return "", err
+		return models.ToolExecutionRecord{}, err
 	}
-	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
-	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+	return executePreviewCommand(ctx, host, execCtx, preview)
 }
 
 type processSearchTool struct{}
@@ -236,13 +262,12 @@ func (t *processSearchTool) Preview(arguments string) (models.ActionPreview, err
 	}
 	return models.ActionPreview{ToolName: "process_search", ReadOnly: true, CommandPreview: "ps -ef | grep -i -- " + shellQuote(keyword) + " | grep -v grep"}, nil
 }
-func (t *processSearchTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+func (t *processSearchTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (models.ToolExecutionRecord, error) {
 	preview, err := t.Preview(arguments)
 	if err != nil {
-		return "", err
+		return models.ToolExecutionRecord{}, err
 	}
-	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
-	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+	return executePreviewCommand(ctx, host, execCtx, preview)
 }
 
 type serviceStatusTool struct{}
@@ -265,7 +290,7 @@ func (t *serviceStatusTool) Definition() models.ToolDefinition {
 	}
 }
 func (t *serviceStatusTool) Summary() models.ToolSummary {
-	return models.ToolSummary{Name: "service_status_inspect", Description: "Inspect service status.", ReadOnly: true}
+	return models.ToolSummary{Name: "service_status_inspect", Description: "Inspect service status. Prebuilt diagnostic shortcut.", ReadOnly: true}
 }
 func (t *serviceStatusTool) Preview(arguments string) (models.ActionPreview, error) {
 	service, err := stringArg(arguments, "service")
@@ -275,13 +300,12 @@ func (t *serviceStatusTool) Preview(arguments string) (models.ActionPreview, err
 	command := "systemctl status --no-pager " + shellQuote(service) + " 2>/dev/null || service " + shellQuote(service) + " status 2>/dev/null || launchctl list | grep -i -- " + shellQuote(service)
 	return models.ActionPreview{ToolName: "service_status_inspect", ReadOnly: true, CommandPreview: command}, nil
 }
-func (t *serviceStatusTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+func (t *serviceStatusTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (models.ToolExecutionRecord, error) {
 	preview, err := t.Preview(arguments)
 	if err != nil {
-		return "", err
+		return models.ToolExecutionRecord{}, err
 	}
-	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
-	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+	return executePreviewCommand(ctx, host, execCtx, preview)
 }
 
 type fileLogSearchTool struct{}
@@ -305,7 +329,7 @@ func (t *fileLogSearchTool) Definition() models.ToolDefinition {
 	}
 }
 func (t *fileLogSearchTool) Summary() models.ToolSummary {
-	return models.ToolSummary{Name: "file_log_search", Description: "Search log/file contents.", ReadOnly: true}
+	return models.ToolSummary{Name: "file_log_search", Description: "Search log/file contents. Prebuilt diagnostic shortcut.", ReadOnly: true}
 }
 func (t *fileLogSearchTool) Preview(arguments string) (models.ActionPreview, error) {
 	var input struct {
@@ -318,13 +342,12 @@ func (t *fileLogSearchTool) Preview(arguments string) (models.ActionPreview, err
 	command := "grep -n -C 2 -- " + shellQuote(input.Pattern) + " " + shellQuote(input.Path) + " | tail -n 80"
 	return models.ActionPreview{ToolName: "file_log_search", ReadOnly: true, CommandPreview: command}, nil
 }
-func (t *fileLogSearchTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+func (t *fileLogSearchTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (models.ToolExecutionRecord, error) {
 	preview, err := t.Preview(arguments)
 	if err != nil {
-		return "", err
+		return models.ToolExecutionRecord{}, err
 	}
-	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
-	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+	return executePreviewCommand(ctx, host, execCtx, preview)
 }
 
 type directoryUsageTool struct{}
@@ -347,7 +370,7 @@ func (t *directoryUsageTool) Definition() models.ToolDefinition {
 	}
 }
 func (t *directoryUsageTool) Summary() models.ToolSummary {
-	return models.ToolSummary{Name: "directory_usage_inspect", Description: "Inspect per-directory disk usage.", ReadOnly: true}
+	return models.ToolSummary{Name: "directory_usage_inspect", Description: "Inspect per-directory disk usage. Prebuilt diagnostic shortcut.", ReadOnly: true}
 }
 func (t *directoryUsageTool) Preview(arguments string) (models.ActionPreview, error) {
 	path, err := stringArg(arguments, "path")
@@ -357,13 +380,12 @@ func (t *directoryUsageTool) Preview(arguments string) (models.ActionPreview, er
 	command := "du -xh -d 1 " + shellQuote(path) + " 2>/dev/null || du -xh -d 1 " + shellQuote(path) + " || du -sh " + shellQuote(path)
 	return models.ActionPreview{ToolName: "directory_usage_inspect", ReadOnly: true, CommandPreview: command}, nil
 }
-func (t *directoryUsageTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+func (t *directoryUsageTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (models.ToolExecutionRecord, error) {
 	preview, err := t.Preview(arguments)
 	if err != nil {
-		return "", err
+		return models.ToolExecutionRecord{}, err
 	}
-	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
-	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+	return executePreviewCommand(ctx, host, execCtx, preview)
 }
 
 type journalLogSearchTool struct{}
@@ -387,7 +409,7 @@ func (t *journalLogSearchTool) Definition() models.ToolDefinition {
 	}
 }
 func (t *journalLogSearchTool) Summary() models.ToolSummary {
-	return models.ToolSummary{Name: "journal_log_search", Description: "Inspect recent journal/syslog lines for a service.", ReadOnly: true}
+	return models.ToolSummary{Name: "journal_log_search", Description: "Inspect recent journal/syslog lines for a service. Prebuilt diagnostic shortcut.", ReadOnly: true}
 }
 func (t *journalLogSearchTool) Preview(arguments string) (models.ActionPreview, error) {
 	var input struct {
@@ -406,13 +428,12 @@ func (t *journalLogSearchTool) Preview(arguments string) (models.ActionPreview, 
 	command := fmt.Sprintf("journalctl -u %s -n %d --no-pager 2>/dev/null || grep -i -- %s /var/log/system.log 2>/dev/null | tail -n %d || grep -i -- %s /var/log/messages 2>/dev/null | tail -n %d", shellQuote(input.Service), input.Lines, shellQuote(input.Service), input.Lines, shellQuote(input.Service), input.Lines)
 	return models.ActionPreview{ToolName: "journal_log_search", ReadOnly: true, CommandPreview: command}, nil
 }
-func (t *journalLogSearchTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+func (t *journalLogSearchTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (models.ToolExecutionRecord, error) {
 	preview, err := t.Preview(arguments)
 	if err != nil {
-		return "", err
+		return models.ToolExecutionRecord{}, err
 	}
-	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
-	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+	return executePreviewCommand(ctx, host, execCtx, preview)
 }
 
 type packageManagerInspectTool struct{}
@@ -434,7 +455,7 @@ func (t *packageManagerInspectTool) Definition() models.ToolDefinition {
 	}
 }
 func (t *packageManagerInspectTool) Summary() models.ToolSummary {
-	return models.ToolSummary{Name: "package_manager_inspect", Description: "Inspect distro package manager and package state.", ReadOnly: true}
+	return models.ToolSummary{Name: "package_manager_inspect", Description: "Inspect distro package manager and package state. Prebuilt diagnostic shortcut.", ReadOnly: true}
 }
 func (t *packageManagerInspectTool) Preview(arguments string) (models.ActionPreview, error) {
 	command := "command -v apt || true; command -v dnf || true; command -v yum || true; command -v zypper || true; command -v pacman || true"
@@ -443,13 +464,12 @@ func (t *packageManagerInspectTool) Preview(arguments string) (models.ActionPrev
 	}
 	return models.ActionPreview{ToolName: "package_manager_inspect", ReadOnly: true, CommandPreview: command}, nil
 }
-func (t *packageManagerInspectTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+func (t *packageManagerInspectTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (models.ToolExecutionRecord, error) {
 	preview, err := t.Preview(arguments)
 	if err != nil {
-		return "", err
+		return models.ToolExecutionRecord{}, err
 	}
-	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
-	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+	return executePreviewCommand(ctx, host, execCtx, preview)
 }
 
 type userInspectTool struct{}
@@ -472,7 +492,7 @@ func (t *userInspectTool) Definition() models.ToolDefinition {
 	}
 }
 func (t *userInspectTool) Summary() models.ToolSummary {
-	return models.ToolSummary{Name: "user_inspect", Description: "Inspect Linux user account facts.", ReadOnly: true}
+	return models.ToolSummary{Name: "user_inspect", Description: "Inspect Linux user account facts. Prebuilt diagnostic shortcut.", ReadOnly: true}
 }
 func (t *userInspectTool) Preview(arguments string) (models.ActionPreview, error) {
 	username, err := stringArg(arguments, "username")
@@ -482,13 +502,12 @@ func (t *userInspectTool) Preview(arguments string) (models.ActionPreview, error
 	command := "id " + shellQuote(username) + " 2>/dev/null; getent passwd " + shellQuote(username) + " 2>/dev/null || dscl . -read /Users/" + shellQuote(username) + " 2>/dev/null || true"
 	return models.ActionPreview{ToolName: "user_inspect", ReadOnly: true, CommandPreview: command}, nil
 }
-func (t *userInspectTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+func (t *userInspectTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (models.ToolExecutionRecord, error) {
 	preview, err := t.Preview(arguments)
 	if err != nil {
-		return "", err
+		return models.ToolExecutionRecord{}, err
 	}
-	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
-	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+	return executePreviewCommand(ctx, host, execCtx, preview)
 }
 
 type mutatingTool struct {
@@ -539,7 +558,7 @@ func (t *mutatingTool) Definition() models.ToolDefinition {
 	}
 }
 func (t *mutatingTool) Summary() models.ToolSummary {
-	return models.ToolSummary{Name: t.name, Description: t.description, ReadOnly: false}
+	return models.ToolSummary{Name: t.name, Description: t.description + " Approval-gated shortcut.", ReadOnly: false}
 }
 func (t *mutatingTool) Preview(arguments string) (models.ActionPreview, error) {
 	switch t.name {
@@ -568,13 +587,12 @@ func (t *mutatingTool) Preview(arguments string) (models.ActionPreview, error) {
 		return models.ActionPreview{}, errors.New("unsupported mutating tool")
 	}
 }
-func (t *mutatingTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+func (t *mutatingTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (models.ToolExecutionRecord, error) {
 	preview, err := t.Preview(arguments)
 	if err != nil {
-		return "", err
+		return models.ToolExecutionRecord{}, err
 	}
-	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
-	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+	return executePreviewCommand(ctx, host, execCtx, preview)
 }
 
 type deleteUserTool struct{}
@@ -598,7 +616,7 @@ func (t *deleteUserTool) Definition() models.ToolDefinition {
 	}
 }
 func (t *deleteUserTool) Summary() models.ToolSummary {
-	return models.ToolSummary{Name: "delete_user", Description: "Delete a Linux user account.", ReadOnly: false}
+	return models.ToolSummary{Name: "delete_user", Description: "Delete a Linux user account. Approval-gated shortcut.", ReadOnly: false}
 }
 func (t *deleteUserTool) Preview(arguments string) (models.ActionPreview, error) {
 	var input struct {
@@ -615,13 +633,12 @@ func (t *deleteUserTool) Preview(arguments string) (models.ActionPreview, error)
 	command += " " + shellQuote(input.Username)
 	return models.ActionPreview{ToolName: "delete_user", ReadOnly: false, CommandPreview: command, RiskHint: "User deletion changes identity state; requires approval."}, nil
 }
-func (t *deleteUserTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+func (t *deleteUserTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (models.ToolExecutionRecord, error) {
 	preview, err := t.Preview(arguments)
 	if err != nil {
-		return "", err
+		return models.ToolExecutionRecord{}, err
 	}
-	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
-	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+	return executePreviewCommand(ctx, host, execCtx, preview)
 }
 
 type shellTool struct{}
@@ -632,7 +649,7 @@ func (t *shellTool) Definition() models.ToolDefinition {
 		Type: "function",
 		Function: models.ToolFunctionDefinition{
 			Name:        "run_shell",
-			Description: "Run a shell command when no builtin tool covers the task. This always goes through policy.",
+			Description: "Primary command execution path for Linux operations. Runs an explicit shell command through policy review and returns structured, possibly truncated command output.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -644,22 +661,25 @@ func (t *shellTool) Definition() models.ToolDefinition {
 	}
 }
 func (t *shellTool) Summary() models.ToolSummary {
-	return models.ToolSummary{Name: "run_shell", Description: "Run a custom shell command through policy.", ReadOnly: false}
+	return models.ToolSummary{Name: "run_shell", Description: "Primary shell execution path with policy review and structured output.", ReadOnly: false}
 }
 func (t *shellTool) Preview(arguments string) (models.ActionPreview, error) {
 	command, err := stringArg(arguments, "command")
 	if err != nil {
 		return models.ActionPreview{}, err
 	}
+	command, err = validateShellCommand(command)
+	if err != nil {
+		return models.ActionPreview{}, err
+	}
 	return models.ActionPreview{ToolName: "run_shell", ReadOnly: false, CommandPreview: command, RiskHint: "Custom shell execution can be dangerous; requires policy review."}, nil
 }
-func (t *shellTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (string, error) {
+func (t *shellTool) Execute(ctx context.Context, host models.Host, execCtx ExecutionContext, arguments string) (models.ToolExecutionRecord, error) {
 	preview, err := t.Preview(arguments)
 	if err != nil {
-		return "", err
+		return models.ToolExecutionRecord{}, err
 	}
-	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
-	return strings.TrimSpace(result.Stdout + "\n" + result.Stderr), err
+	return executePreviewCommand(ctx, host, execCtx, preview)
 }
 
 func decodeArguments(arguments string, target any) error {
@@ -687,4 +707,139 @@ func stringArg(arguments string, key string) (string, error) {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func validateShellCommand(command string) (string, error) {
+	normalized := strings.TrimSpace(strings.ReplaceAll(command, "\r\n", "\n"))
+	if normalized == "" {
+		return "", errors.New("command is required")
+	}
+	if strings.ContainsRune(normalized, '\x00') {
+		return "", errors.New("command contains invalid NUL byte")
+	}
+	if len(normalized) > maxShellCommandLength {
+		return "", fmt.Errorf("command exceeds %d characters", maxShellCommandLength)
+	}
+	return normalized, nil
+}
+
+func executePreviewCommand(ctx context.Context, host models.Host, execCtx ExecutionContext, preview models.ActionPreview) (models.ToolExecutionRecord, error) {
+	result, err := execCtx.Runner.Run(ctx, host, preview.CommandPreview, execCtx.Stream)
+	record := buildToolExecutionRecord(preview.ToolName, preview.CommandPreview, result, execCtx.Settings)
+	return record, err
+}
+
+func formatCommandResult(result runner.Result) string {
+	var parts []string
+	if strings.TrimSpace(result.Command) != "" {
+		parts = append(parts, "command: "+truncateInline(result.Command, maxCommandLabelChars))
+	}
+	if !result.StartedAt.IsZero() {
+		parts = append(parts, fmt.Sprintf("exit_code: %d", result.ExitCode))
+		parts = append(parts, fmt.Sprintf("duration_ms: %d", result.Duration.Milliseconds()))
+	}
+
+	stdout := strings.TrimSpace(result.Stdout)
+	stderr := strings.TrimSpace(result.Stderr)
+	if stdout != "" {
+		parts = append(parts, "stdout:\n"+stdout)
+	}
+	if stderr != "" {
+		parts = append(parts, "stderr:\n"+stderr)
+	}
+	if len(parts) == 0 {
+		return "command completed with no output"
+	}
+	return strings.Join(parts, "\n")
+}
+
+func buildToolExecutionRecord(toolName, commandPreview string, result runner.Result, settings models.RuntimeSettings) models.ToolExecutionRecord {
+	raw := formatCommandResult(result)
+	modelText, truncated, omitted := truncateToolResult(raw, settings)
+	return models.ToolExecutionRecord{
+		ToolName:       toolName,
+		CommandPreview: commandPreview,
+		RawResult:      raw,
+		ModelResult:    modelText,
+		Truncated:      truncated,
+		RawChars:       len(raw),
+		ModelChars:     len(modelText),
+		OmittedChars:   omitted,
+	}
+}
+
+func truncateInline(value string, limit int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	if limit <= 12 {
+		return value[:limit]
+	}
+	return value[:limit-3] + "..."
+}
+
+func truncateWithNotice(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	if limit <= 64 {
+		return value[:limit]
+	}
+	notice := fmt.Sprintf("\n... [truncated %d chars] ...\n", len(value)-limit)
+	head := (limit - len(notice)) * 2 / 3
+	tail := limit - len(notice) - head
+	if head < 1 {
+		head = 1
+	}
+	if tail < 1 {
+		tail = 1
+	}
+	return value[:head] + notice + value[len(value)-tail:]
+}
+
+func truncateToolResult(value string, settings models.RuntimeSettings) (string, bool, int) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value, false, 0
+	}
+	if settings.ToolResultMaxChars <= 0 {
+		settings = models.DefaultRuntimeSettings()
+	}
+	maxChars := settings.ToolResultMaxChars
+	headChars := settings.ToolResultHeadChars
+	tailChars := settings.ToolResultTailChars
+	if maxChars <= 0 || len(value) <= maxChars {
+		return value, false, 0
+	}
+	if headChars <= 0 {
+		headChars = maxChars * 2 / 3
+	}
+	if tailChars < 0 {
+		tailChars = 0
+	}
+	if headChars+tailChars >= maxChars {
+		headChars = maxChars * 2 / 3
+		tailChars = maxChars - headChars - 64
+		if tailChars < 0 {
+			tailChars = 0
+		}
+	}
+	if headChars > len(value) {
+		headChars = len(value)
+	}
+	if tailChars > len(value)-headChars {
+		tailChars = len(value) - headChars
+	}
+	omitted := len(value) - headChars - tailChars
+	notice := fmt.Sprintf("\n[truncated=true omitted_chars=%d kept_head=%d kept_tail=%d]\n", omitted, headChars, tailChars)
+	result := value[:headChars] + notice
+	if tailChars > 0 {
+		result += value[len(value)-tailChars:]
+	}
+	if len(result) > maxChars {
+		result = truncateWithNotice(result, maxChars)
+	}
+	return result, true, omitted
 }

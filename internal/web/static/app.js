@@ -120,6 +120,14 @@ function truncateText(value, limit = 140) {
   return `${text.slice(0, limit - 1)}…`;
 }
 
+function formatTokenCount(value) {
+  const count = Number(value || 0);
+  if (!count) return "--";
+  if (count >= 10000) return `${Math.round(count / 1000)}k`;
+  if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
+  return String(count);
+}
+
 function copyJSON(value) {
   return value ? JSON.parse(JSON.stringify(value)) : value;
 }
@@ -130,6 +138,7 @@ function runtimeSettings() {
 
 function runtimeSettingsWithDefaults() {
   return {
+    max_agent_steps: 20,
     context_soft_limit_tokens: 20000,
     compression_trigger_tokens: 16000,
     response_reserve_tokens: 4000,
@@ -210,8 +219,16 @@ function latestRunForSessionDetail(detail) {
   return detail?.turns?.at(-1)?.run || null;
 }
 
+function latestTurnForSessionDetail(detail) {
+  return detail?.turns?.at(-1)?.turn || null;
+}
+
 function latestSessionActivity(detail) {
   return detail?.turns?.at(-1)?.last_event_at || detail?.session?.updated_at || null;
+}
+
+function countSessionTools(detail) {
+  return (detail?.turns || []).reduce((total, item) => total + (item?.turn?.tool_results?.length || 0), 0);
 }
 
 function findHostById(hostId) {
@@ -476,7 +493,9 @@ function renderChatSummary() {
   const memory = document.getElementById("chat-memory-status");
   const host = document.getElementById("chat-conversation-host");
   const run = document.getElementById("chat-conversation-run");
-  if (!title || !summary || !memory || !host || !run) return;
+  const budget = document.getElementById("chat-conversation-budget");
+  if (!title || !summary || !memory || !host || !run || !budget) return;
+  const currentRuntime = runtimeSettingsWithDefaults();
 
   if (!state.currentSessionDetail) {
     const selectedHost = findHostById(getDefaultHostId());
@@ -485,12 +504,13 @@ function renderChatSummary() {
     memory.textContent = selectedHost ? `新会话会在 ${selectedHost.display_name || selectedHost.id} 上创建独立记忆上下文。` : "多轮记忆状态将在真实会话后显示。";
     host.textContent = selectedHost ? `目标主机 ${selectedHost.display_name || selectedHost.id}` : "未选主机";
     run.textContent = selectedHost ? `新会话将走 ${hostModeLabel(selectedHost.mode)} 执行链路` : "暂无运行";
+    budget.textContent = `Max steps ${currentRuntime.max_agent_steps} · Soft ${formatTokenCount(currentRuntime.context_soft_limit_tokens)} tokens`;
     return;
   }
 
   const session = state.currentSessionDetail.session;
   const latestRun = latestRunForSessionDetail(state.currentSessionDetail);
-  const latestTurn = state.currentSessionDetail.turns?.at(-1)?.turn;
+  const latestTurn = latestTurnForSessionDetail(state.currentSessionDetail);
   const memoryState = state.currentSessionDetail.memory || {};
   const promptStats = latestTurn?.prompt_stats || {};
   title.textContent = sessionTitle(session);
@@ -503,6 +523,7 @@ function renderChatSummary() {
   ].join(" · ");
   host.textContent = state.currentSessionDetail.host.display_name || state.currentSessionDetail.host.id;
   run.textContent = latestRun ? `最近状态 ${latestRun.status}` : "暂无运行";
+  budget.textContent = `Max steps ${currentRuntime.max_agent_steps} · Prompt soft ${formatTokenCount(currentRuntime.context_soft_limit_tokens)} tokens`;
 }
 
 function renderChatComposer() {
@@ -556,74 +577,56 @@ function renderChatComposer() {
 }
 
 function renderChatApprovals() {
-  const count = document.getElementById("chat-approval-count");
-  const list = document.getElementById("chat-approval-list");
-  if (!count || !list) return;
+  const summary = document.getElementById("chat-approval-summary");
+  const note = document.getElementById("chat-approval-note");
+  if (!summary || !note) return;
 
-  const approvals = state.currentSessionDetail?.pending_approvals?.length
-    ? state.currentSessionDetail.pending_approvals
-    : state.approvals.filter((item) => !item.decision);
+  const sessionApprovals = state.currentSessionDetail?.pending_approvals || [];
+  const globalPending = state.approvals.filter((item) => !item.decision);
 
-  count.textContent = String(approvals.length);
-  list.innerHTML = "";
-
-  if (approvals.length === 0) {
-    list.innerHTML = `<div class="app-empty-state">当前无待审批任务。</div>`;
+  if (state.currentSessionDetail) {
+    summary.textContent = sessionApprovals.length > 0 ? `当前会话有 ${sessionApprovals.length} 项待审批` : "当前会话无需审批";
+    note.textContent = sessionApprovals.length > 0
+      ? "请直接在对话流中的审批卡片里点击批准或拒绝。"
+      : globalPending.length > 0
+        ? `其它会话还有 ${globalPending.length} 项待审批，切到对应会话后处理。`
+        : "当前所有会话都没有待处理审批。";
     return;
   }
 
-  for (const approval of approvals) {
-    const item = document.createElement("div");
-    item.className = "app-approval-card";
-    item.innerHTML = `
-      <div class="app-approval-card-head">
-        <strong>${escapeHTML(approval.tool_name)}</strong>
-        <span>${escapeHTML(approval.scope || "")}</span>
-      </div>
-      <p class="app-approval-card-text">${escapeHTML(approval.reason)}</p>
-      <div class="app-approval-card-meta">${escapeHTML(approval.host_display_name || approval.host_id || "未知主机")} · ${escapeHTML(approval.session_title || approval.session_id || "未命名会话")}</div>
-      <div class="app-approval-card-actions">
-        <button data-id="${approval.id}" data-decision="approve" type="button">批准</button>
-        <button data-id="${approval.id}" data-decision="deny" type="button">拒绝</button>
-        ${approval.session_id ? `<button data-session="${approval.session_id}" type="button">跳转</button>` : ""}
-      </div>
-    `;
-    item.querySelectorAll("button[data-decision]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        button.disabled = true;
-        await request(`/api/approvals/${button.dataset.id}/resolve`, {
-          method: "POST",
-          body: JSON.stringify({ decision: button.dataset.decision, actor: "web" }),
-        });
-        scheduleRefresh({ detail: true });
-      });
-    });
-    item.querySelector("button[data-session]")?.addEventListener("click", async (event) => {
-      const sessionId = event.currentTarget.dataset.session;
-      if (!sessionId) return;
-      await loadSessionDetail(sessionId);
-      renderChat();
-    });
-    list.appendChild(item);
-  }
+  summary.textContent = globalPending.length > 0 ? `共有 ${globalPending.length} 项待审批` : "当前没有待审批";
+  note.textContent = globalPending.length > 0 ? "进入对应会话后可在会话内直接审批。" : "审批动作已迁移到对话流，不再依赖侧边栏按钮。";
 }
 
 function renderChatHealth() {
   const status = document.getElementById("chat-health-status");
   const model = document.getElementById("chat-health-model");
   const summary = document.getElementById("chat-health-summary");
-  const sessions = document.getElementById("chat-health-sessions");
-  const runs = document.getElementById("chat-health-runs");
-  const hosts = document.getElementById("chat-health-hosts");
-  if (!status || !model || !summary || !sessions || !runs || !hosts) return;
+  const turns = document.getElementById("chat-session-turns");
+  const pending = document.getElementById("chat-session-pending");
+  const tools = document.getElementById("chat-session-tools");
+  const prompt = document.getElementById("chat-session-prompt");
+  if (!status || !model || !summary || !turns || !pending || !tools || !prompt) return;
 
   status.textContent = state.health?.status === "ok" ? "健康运行" : "状态异常";
   status.className = `app-status-inline${state.health?.status === "ok" ? " is-live" : ""}`;
   model.textContent = [state.health?.preset_name || "未配置预设", state.health?.model || "unknown-model"].join(" · ");
-  summary.textContent = state.health?.policy_summary || "暂无策略摘要。";
-  sessions.textContent = String(state.health?.total_sessions ?? state.sessions.length);
-  runs.textContent = String(state.health?.total_runs ?? state.runs.length);
-  hosts.textContent = String(state.health?.total_hosts ?? state.hosts.length);
+  if (!state.currentSessionDetail) {
+    summary.textContent = `全局 Sessions ${state.health?.total_sessions ?? state.sessions.length} · Runs ${state.health?.total_runs ?? state.runs.length} · Hosts ${state.health?.total_hosts ?? state.hosts.length}`;
+    turns.textContent = "0";
+    pending.textContent = String(state.health?.pending_approvals ?? state.approvals.filter((item) => !item.decision).length);
+    tools.textContent = "0";
+    prompt.textContent = "--";
+    return;
+  }
+
+  const latestTurn = latestTurnForSessionDetail(state.currentSessionDetail);
+  const latestPromptTokens = latestTurn?.prompt_stats?.estimated_prompt_tokens || 0;
+  summary.textContent = `Host ${state.currentSessionDetail.host.display_name || state.currentSessionDetail.host.id} · 全局待审批 ${state.health?.pending_approvals ?? state.approvals.filter((item) => !item.decision).length} · ${state.health?.policy_summary || "暂无策略摘要。"}`;
+  turns.textContent = String(state.currentSessionDetail.turns.length);
+  pending.textContent = String(state.currentSessionDetail.pending_approvals?.length || 0);
+  tools.textContent = String(countSessionTools(state.currentSessionDetail));
+  prompt.textContent = latestPromptTokens ? `${formatTokenCount(latestPromptTokens)}t` : "--";
 }
 
 function renderChatTrace() {
@@ -670,56 +673,98 @@ function renderChat() {
 
   for (const item of state.currentSessionDetail.turns) {
     const replay = buildReplay(item);
-    chatHistory.appendChild(renderUserRow(item.turn.user_input));
+    chatHistory.appendChild(renderUserRow(item.turn, state.currentSessionDetail.host));
     if (replay.toolEvents.length > 0 || replay.consoleOutput || (item.approvals || []).length > 0) {
-      chatHistory.appendChild(renderAssistantTrace(item.run, replay, item.approvals || []));
+      chatHistory.appendChild(renderAssistantTrace(item.turn, item.run, replay, item.approvals || []));
     }
-    chatHistory.appendChild(renderAssistantMessage(item.run, replay));
+    chatHistory.appendChild(renderAssistantMessage(item.turn, item.run, replay, item.approvals || []));
   }
 
   queueMicrotask(scrollChatToBottom);
 }
 
-function renderUserRow(text) {
+function renderUserRow(turn, host) {
   const node = document.createElement("div");
-  node.className = "flex gap-md group";
+  node.className = "app-chat-entry app-chat-entry--user";
   node.innerHTML = `
-    <div class="w-8 h-8 rounded-full bg-surface-container-high flex items-center justify-center shrink-0 border border-outline-variant">
-      <span class="material-symbols-outlined text-[18px] text-on-surface">person</span>
+    <div class="app-chat-avatar app-chat-avatar--user">
+      <span class="material-symbols-outlined">person</span>
     </div>
-    <div class="pt-1 text-on-surface font-body-lg text-body-lg font-medium tracking-tight">${escapeHTML(text)}</div>
+    <div class="app-chat-entry-main">
+      <div class="app-chat-entry-meta">
+        <span>用户</span>
+        <span>${formatTime(turn.created_at)}</span>
+        <span>${escapeHTML(host?.display_name || host?.id || "未绑定主机")}</span>
+      </div>
+      <div class="app-chat-user-text">${escapeHTML(turn.user_input || "")}</div>
+    </div>
   `;
   return node;
 }
 
-function renderAssistantTrace(run, replay, approvals) {
+function renderAssistantTrace(turn, run, replay, approvals) {
   const node = document.createElement("div");
-  node.className = "flex gap-md";
+  node.className = "app-chat-entry app-chat-entry--assistant";
   node.innerHTML = `
-    <div class="w-8 h-8 rounded-full bg-[#E6E4D9] flex items-center justify-center shrink-0 border border-[#E2E2DB]">
-      <span class="material-symbols-outlined text-[18px] text-[#C96442]" style="font-variation-settings: 'FILL' 1;">robot_2</span>
+    <div class="app-chat-avatar app-chat-avatar--assistant">
+      <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">robot_2</span>
     </div>
-    <div class="flex-1 min-w-0">
-      <div class="bg-surface-container-lowest border border-[#E2E2DB] rounded-xl p-md space-y-3"></div>
+    <div class="app-chat-entry-main">
+      <div class="app-chat-trace-card"></div>
     </div>
   `;
-  const box = node.querySelector(".space-y-3");
+  const box = node.querySelector(".app-chat-trace-card");
+  const traceMeta = document.createElement("div");
+  traceMeta.className = "app-chat-trace-meta";
+  traceMeta.innerHTML = `
+    <span>Trace</span>
+    <span>${replay.toolEvents.length} events</span>
+    <span>${replay.toolResults.length} results</span>
+    <span>${formatTime(replay.lastEventAt || run.updated_at || turn.updated_at)}</span>
+  `;
+  box.appendChild(traceMeta);
 
   if (approvals.length > 0) {
     const wrap = document.createElement("div");
-    wrap.className = "space-y-2";
+    wrap.className = "app-chat-approval-list";
     approvals.forEach((approval) => {
       const badge = approvalDecisionMeta(approval.decision);
       const item = document.createElement("div");
-      item.className = "border border-[#E2E2DB] rounded-lg p-sm bg-white";
+      item.className = `app-approval-inline${approval.decision ? "" : " is-pending"}`;
       item.innerHTML = `
-        <div class="flex items-center justify-between mb-1">
-          <span class="font-label text-label text-on-surface font-medium">${escapeHTML(approval.tool_name)}</span>
-          <span class="text-[11px] px-2 py-0.5 rounded-full ${badge.className}">${badge.label}</span>
+        <div class="app-approval-inline-head">
+          <span class="app-approval-inline-title">${escapeHTML(approval.tool_name)}</span>
+          <span class="app-approval-inline-badge ${badge.className}">${badge.label}</span>
         </div>
-        <div class="font-body-sm text-body-sm text-secondary">${escapeHTML(approval.reason)}</div>
-        <div class="font-body-sm text-[11px] text-secondary mt-1">${escapeHTML(approval.scope || "")}</div>
+        <div class="app-approval-inline-text">${escapeHTML(approval.reason)}</div>
+        <div class="app-approval-inline-scope">${escapeHTML(approval.scope || "未提供 scope")}</div>
+        ${approval.decision ? "" : `
+          <div class="app-approval-inline-actions">
+            <button data-id="${approval.id}" data-decision="approve" type="button">批准</button>
+            <button data-id="${approval.id}" data-decision="deny" type="button">拒绝</button>
+          </div>
+        `}
       `;
+      item.querySelectorAll("button[data-decision]").forEach((button) => {
+        button.addEventListener("click", async (event) => {
+          const current = event.currentTarget;
+          item.querySelectorAll("button[data-decision]").forEach((action) => {
+            action.disabled = true;
+          });
+          try {
+            await request(`/api/approvals/${current.dataset.id}/resolve`, {
+              method: "POST",
+              body: JSON.stringify({ decision: current.dataset.decision, actor: "web" }),
+            });
+            scheduleRefresh({ detail: true });
+          } catch (error) {
+            item.querySelectorAll("button[data-decision]").forEach((action) => {
+              action.disabled = false;
+            });
+            current.textContent = `失败：${error.message}`;
+          }
+        });
+      });
       wrap.appendChild(item);
     });
     box.appendChild(wrap);
@@ -727,20 +772,20 @@ function renderAssistantTrace(run, replay, approvals) {
 
   if (replay.toolEvents.length > 0) {
     const list = document.createElement("div");
-    list.className = "space-y-2";
+    list.className = "app-chat-trace-list";
     replay.toolEvents.forEach((event) => {
       const block = document.createElement("div");
-      block.className = "border-b border-surface-variant pb-sm mb-sm last:border-b-0 last:pb-0 last:mb-0";
+      block.className = "app-chat-trace-item";
       block.innerHTML = `
-        <div class="flex items-center justify-between mb-1">
-          <div class="flex items-center gap-sm">
-            <span class="material-symbols-outlined text-tertiary-container text-[18px]">${eventIcon(event.type)}</span>
-            <span class="font-label text-label text-on-surface font-medium">${escapeHTML(eventTitle(event))}</span>
+        <div class="app-chat-trace-item-head">
+          <div class="app-chat-trace-item-label">
+            <span class="material-symbols-outlined">${eventIcon(event.type)}</span>
+            <span>${escapeHTML(eventTitle(event))}</span>
           </div>
-          <span class="font-body-sm text-body-sm text-secondary">${formatTime(event.timestamp)}</span>
+          <span class="app-chat-trace-item-time">${formatTime(event.timestamp)}</span>
         </div>
-        <div class="font-body-sm text-body-sm text-secondary">${escapeHTML(event.message || "")}</div>
-        ${event.payload ? `<div class="markdown-body mt-2 text-xs text-on-surface-variant">${renderMarkdown(`\`\`\`json\n${JSON.stringify(event.payload, null, 2)}\n\`\`\``)}</div>` : ""}
+        <div class="app-chat-trace-item-text">${escapeHTML(event.message || "")}</div>
+        ${event.payload ? `<details class="app-chat-trace-payload"><summary>payload</summary><pre>${escapeHTML(JSON.stringify(event.payload, null, 2))}</pre></details>` : ""}
       `;
       list.appendChild(block);
     });
@@ -748,38 +793,56 @@ function renderAssistantTrace(run, replay, approvals) {
   }
 
   if (replay.consoleOutput) {
-    const consoleNode = document.createElement("div");
-    consoleNode.className = "rounded-lg border border-[#E2E2DB] bg-[#262624] text-[#F5F4ED] p-sm";
+    const consoleNode = document.createElement("details");
+    const lineCount = replay.consoleOutput.split("\n").filter(Boolean).length || 1;
+    consoleNode.className = "app-chat-console";
+    if (lineCount <= 10 && replay.consoleOutput.length <= 500) {
+      consoleNode.open = true;
+    }
     consoleNode.innerHTML = `
-      <div class="font-label text-[11px] uppercase tracking-wider text-[#C8C7BE] mb-2">工具输出</div>
-      <pre class="text-xs whitespace-pre-wrap break-words font-mono">${escapeHTML(replay.consoleOutput)}</pre>
+      <summary>工具输出 · ${lineCount} lines</summary>
+      <pre>${escapeHTML(replay.consoleOutput)}</pre>
     `;
     box.appendChild(consoleNode);
   }
 
-  if (box.childElementCount === 0) return document.createDocumentFragment();
+  if (box.childElementCount === 1 && approvals.length === 0 && replay.toolEvents.length === 0 && !replay.consoleOutput) {
+    return document.createDocumentFragment();
+  }
   return node;
 }
 
-function renderAssistantMessage(run, replay) {
+function renderAssistantMessage(turn, run, replay, approvals) {
   const node = document.createElement("div");
   const statusMeta = runStatusMeta(run.status);
-  node.className = "flex gap-md";
+  const promptStats = turn.prompt_stats || {};
+  const chips = [
+    `tools ${replay.toolResults.length}`,
+    `approvals ${approvals.length}`,
+    `prompt ${formatTokenCount(promptStats.estimated_prompt_tokens)}t`,
+  ];
+  if (promptStats.compression_triggered) {
+    chips.push("history compressed");
+  }
+  node.className = "app-chat-entry app-chat-entry--assistant";
   node.innerHTML = `
-    <div class="w-8 h-8 rounded-full bg-[#E6E4D9] flex items-center justify-center shrink-0 border border-[#E2E2DB]">
-      <span class="material-symbols-outlined text-[18px] text-[#C96442]" style="font-variation-settings: 'FILL' 1;">robot_2</span>
+    <div class="app-chat-avatar app-chat-avatar--assistant">
+      <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">robot_2</span>
     </div>
-    <div class="flex-1 min-w-0">
-      <div class="bg-surface-container-lowest border border-[#E2E2DB] rounded-xl p-md">
-        <div class="flex items-center justify-between border-b border-surface-variant pb-sm mb-sm">
-          <div class="flex items-center gap-sm">
-            <span class="material-symbols-outlined ${statusMeta.color} text-[18px]">${statusMeta.icon}</span>
-            <span class="font-label text-label text-on-surface font-medium">${escapeHTML(run.id)}</span>
+    <div class="app-chat-entry-main">
+      <div class="app-chat-message-card">
+        <div class="app-chat-message-head">
+          <div class="app-chat-message-title">
+            <span class="material-symbols-outlined ${statusMeta.color}">${statusMeta.icon}</span>
+            <span>${escapeHTML(run.id)}</span>
           </div>
-          <span class="font-body-sm text-body-sm text-secondary">${escapeHTML(run.status)}</span>
+          <span class="app-chat-message-status">${escapeHTML(run.status)}</span>
         </div>
-        <div class="markdown-body font-body-sm text-body-sm text-secondary">${renderMarkdown(replay.assistantContent)}</div>
-        <div class="font-body-sm text-[11px] text-secondary mt-3">${formatTime(replay.lastEventAt || run.updated_at)}</div>
+        <div class="app-chat-message-chips">
+          ${chips.map((chip) => `<span>${escapeHTML(chip)}</span>`).join("")}
+          <span>${formatTime(replay.lastEventAt || run.updated_at)}</span>
+        </div>
+        <div class="markdown-body app-chat-message-body">${renderMarkdown(replay.assistantContent)}</div>
       </div>
     </div>
   `;
@@ -1081,6 +1144,7 @@ function renderSettings() {
   const presetBaseURLInput = document.getElementById("settings-preset-base-url-input");
   const presetAPIKeyInput = document.getElementById("settings-preset-api-key-input");
   const presetActiveInput = document.getElementById("settings-preset-active-input");
+  const maxAgentStepsInput = document.getElementById("settings-max-agent-steps-input");
   const contextSoftLimitInput = document.getElementById("settings-context-soft-limit-input");
   const compressionTriggerInput = document.getElementById("settings-compression-trigger-input");
   const responseReserveInput = document.getElementById("settings-response-reserve-input");
@@ -1093,7 +1157,7 @@ function renderSettings() {
   const activateButton = document.getElementById("settings-activate-preset");
   const deleteButton = document.getElementById("settings-delete-preset");
   const addButton = document.getElementById("settings-add-preset");
-  if (!presetIDInput || !presetNameInput || !presetModelInput || !presetBaseURLInput || !presetAPIKeyInput || !presetActiveInput || !contextSoftLimitInput || !compressionTriggerInput || !responseReserveInput || !recentFullTurnsInput || !olderUserLedgerInput || !hostProfileTTLInput || !toolResultMaxCharsInput || !toolResultHeadCharsInput || !toolResultTailCharsInput || !activateButton || !deleteButton || !addButton) {
+  if (!presetIDInput || !presetNameInput || !presetModelInput || !presetBaseURLInput || !presetAPIKeyInput || !presetActiveInput || !maxAgentStepsInput || !contextSoftLimitInput || !compressionTriggerInput || !responseReserveInput || !recentFullTurnsInput || !olderUserLedgerInput || !hostProfileTTLInput || !toolResultMaxCharsInput || !toolResultHeadCharsInput || !toolResultTailCharsInput || !activateButton || !deleteButton || !addButton) {
     return;
   }
 
@@ -1105,6 +1169,7 @@ function renderSettings() {
   presetBaseURLInput.value = effectivePreset.base_url || "";
   presetAPIKeyInput.value = effectivePreset.api_key || "";
   presetActiveInput.checked = effectivePreset.id ? effectivePreset.id === currentGatewayPresetId() : true;
+  maxAgentStepsInput.value = currentRuntime.max_agent_steps;
   contextSoftLimitInput.value = currentRuntime.context_soft_limit_tokens;
   compressionTriggerInput.value = currentRuntime.compression_trigger_tokens;
   responseReserveInput.value = currentRuntime.response_reserve_tokens;
@@ -1134,6 +1199,7 @@ function renderSettings() {
           api_key: presetAPIKeyInput.value.trim(),
         };
         next.runtime_settings = {
+          max_agent_steps: Number(maxAgentStepsInput.value || 0),
           context_soft_limit_tokens: Number(contextSoftLimitInput.value || 0),
           compression_trigger_tokens: Number(compressionTriggerInput.value || 0),
           response_reserve_tokens: Number(responseReserveInput.value || 0),
@@ -1226,6 +1292,7 @@ function renderSettings() {
       presetAPIKeyInput.value = "";
       presetActiveInput.checked = true;
       const defaults = runtimeSettingsWithDefaults();
+      maxAgentStepsInput.value = defaults.max_agent_steps;
       contextSoftLimitInput.value = defaults.context_soft_limit_tokens;
       compressionTriggerInput.value = defaults.compression_trigger_tokens;
       responseReserveInput.value = defaults.response_reserve_tokens;
