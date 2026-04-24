@@ -260,24 +260,56 @@ function syncSelectedHost() {
 }
 
 async function loadCore() {
-  const [health, gatewaySettings, hosts, runs, approvals, sessions] = await Promise.all([
-    request("/api/health"),
-    request("/api/settings/gateway"),
-    request("/api/hosts"),
-    request("/api/runs"),
-    request("/api/approvals"),
-    request("/api/sessions"),
-  ]);
-  state.health = health;
-  state.gatewaySettings = gatewaySettings;
-  state.hosts = sortByNewest(hosts.items || [], "updated_at");
-  state.runs = sortByNewest(runs.items || [], "updated_at");
-  state.approvals = sortByNewest(approvals.items || [], "created_at");
-  state.sessions = sortByNewest(sessions.items || [], "updated_at");
-  if (!state.settingsSelectedPresetId) {
-    state.settingsSelectedPresetId = gatewaySettings.current_preset_id || "";
+  const requestsByPage = {
+    chat: [
+      request("/api/health"),
+      request("/api/settings/gateway"),
+      request("/api/hosts"),
+      request("/api/runs"),
+      request("/api/approvals"),
+      request("/api/sessions"),
+    ],
+    assets: [
+      request("/api/health"),
+      request("/api/settings/gateway"),
+      request("/api/hosts"),
+      request("/api/runs"),
+      request("/api/approvals"),
+    ],
+    automation: [
+      request("/api/health"),
+      request("/api/settings/gateway"),
+      request("/api/runs"),
+    ],
+    settings: [
+      request("/api/health"),
+      request("/api/settings/gateway"),
+    ],
+  };
+
+  const payload = await Promise.all(requestsByPage[page] || requestsByPage.chat);
+  state.health = payload[0];
+  state.gatewaySettings = payload[1];
+
+  if (page === "chat") {
+    state.hosts = sortByNewest(payload[2].items || [], "updated_at");
+    state.runs = sortByNewest(payload[3].items || [], "updated_at");
+    state.approvals = sortByNewest(payload[4].items || [], "created_at");
+    state.sessions = sortByNewest(payload[5].items || [], "updated_at");
+  } else if (page === "assets") {
+    state.hosts = sortByNewest(payload[2].items || [], "updated_at");
+    state.runs = sortByNewest(payload[3].items || [], "updated_at");
+    state.approvals = sortByNewest(payload[4].items || [], "created_at");
+  } else if (page === "automation") {
+    state.runs = sortByNewest(payload[2].items || [], "updated_at");
   }
-  syncSelectedHost();
+
+  if (!state.settingsSelectedPresetId) {
+    state.settingsSelectedPresetId = state.gatewaySettings.current_preset_id || "";
+  }
+  if (page === "chat" || page === "assets") {
+    syncSelectedHost();
+  }
 }
 
 async function loadSessionDetail(sessionId) {
@@ -308,7 +340,7 @@ function scheduleRefresh({ detail = false } = {}) {
     state.refreshDetail = false;
     state.refreshInFlight = (async () => {
       await loadCore();
-      if (needDetail && state.currentSessionId) {
+      if (needDetail && page === "chat" && state.currentSessionId) {
         await loadSessionDetail(state.currentSessionId);
       }
       renderPage();
@@ -327,8 +359,15 @@ function appendLiveEvent(event) {
   state.liveEvents.set(event.run_id, dedupeEvents(current).slice(-200));
 }
 
+function disconnectGlobalEvents() {
+  if (!state.eventSource) return;
+  state.eventSource.close();
+  state.eventSource = null;
+  state.streamConnected = false;
+}
+
 function connectGlobalEvents() {
-  if (state.eventSource) state.eventSource.close();
+  disconnectGlobalEvents();
   const source = new EventSource("/api/events/stream");
   state.eventSource = source;
 
@@ -350,7 +389,7 @@ function connectGlobalEvents() {
       state.currentSessionDetail?.turns?.some((item) => item.run.id === event.run_id),
     );
 
-    if (LIVE_RENDER_EVENT_TYPES.has(event.type) && (page !== "chat" || affectsCurrentSession)) {
+    if (page === "chat" && LIVE_RENDER_EVENT_TYPES.has(event.type) && affectsCurrentSession) {
       renderPage();
     }
 
@@ -363,6 +402,21 @@ function connectGlobalEvents() {
       scheduleRefresh({ detail: affectsCurrentSession });
     }
   };
+}
+
+function bindGlobalNavigationCleanup() {
+  if (document.body.dataset.navigationCleanupBound) return;
+  document.body.dataset.navigationCleanupBound = "true";
+
+  const cleanup = () => disconnectGlobalEvents();
+  window.addEventListener("pagehide", cleanup);
+  window.addEventListener("beforeunload", cleanup);
+
+  document.querySelectorAll('a[href^="/"]').forEach((link) => {
+    link.addEventListener("click", () => {
+      disconnectGlobalEvents();
+    });
+  });
 }
 
 function renderPage() {
@@ -1520,7 +1574,10 @@ async function initChatPage() {
 
 async function init() {
   await loadCore();
-  connectGlobalEvents();
+  bindGlobalNavigationCleanup();
+  if (page === "chat") {
+    connectGlobalEvents();
+  }
   if (page === "chat") {
     await initChatPage();
   }
