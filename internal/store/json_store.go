@@ -14,7 +14,7 @@ import (
 
 type JSONStore struct {
 	root string
-	mu   sync.Mutex
+	mu   sync.RWMutex
 }
 
 func NewJSONStore(root string) (*JSONStore, error) {
@@ -41,8 +41,8 @@ func (s *JSONStore) GetHost(id string) (models.Host, bool, error) {
 func (s *JSONStore) SaveHost(host models.Host) error { return saveObject(s, "hosts", host.ID, host) }
 
 func (s *JSONStore) GetGatewayConfig() (models.GatewayConfig, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	var zero models.GatewayConfig
 	path := filepath.Join(s.root, "gateway_config.json")
@@ -124,8 +124,8 @@ func (s *JSONStore) AppendEvent(event models.Event) error {
 }
 
 func (s *JSONStore) ListEventsByRun(runID string) ([]models.Event, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	path := filepath.Join(s.root, "events", runID+".jsonl")
 	file, err := os.Open(path)
@@ -170,8 +170,8 @@ func (s *JSONStore) AppendAudit(entry models.AuditEntry) error {
 }
 
 func listObjects[T any](s *JSONStore, dir string) ([]T, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	pattern := filepath.Join(s.root, dir, "*.json")
 	paths, err := filepath.Glob(pattern)
@@ -196,8 +196,8 @@ func listObjects[T any](s *JSONStore, dir string) ([]T, error) {
 }
 
 func getObject[T any](s *JSONStore, dir, id string) (T, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	var zero T
 	path := filepath.Join(s.root, dir, id+".json")
