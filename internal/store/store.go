@@ -26,6 +26,11 @@ type Store interface {
 	GetApproval(id string) (models.Approval, bool, error)
 	SaveApproval(approval models.Approval) error
 
+	ListAutomations() ([]models.AutomationRule, error)
+	GetAutomation(id string) (models.AutomationRule, bool, error)
+	SaveAutomation(rule models.AutomationRule) error
+	DeleteAutomation(id string) error
+
 	AppendEvent(event models.Event) error
 	ListEventsByRun(runID string) ([]models.Event, error)
 	AppendAudit(entry models.AuditEntry) error

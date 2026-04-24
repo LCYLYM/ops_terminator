@@ -34,6 +34,17 @@ const (
 	maxStreamEventBytesPerKind  = 8 * 1024
 )
 
+type plannedToolCall struct {
+	call           models.ToolCall
+	preview        models.ActionPreview
+	rule           models.PolicyRule
+	approval       *models.Approval
+	execute        bool
+	policyOverride bool
+	message        string
+	toolHistory    string
+}
+
 func New(client ChatClient, registry *builtin.Registry, policyEngine *policy.Engine, approvals *approval.Manager, events EventRecorder) *Runtime {
 	return &Runtime{client: client, registry: registry, policy: policyEngine, approvals: approvals, events: events}
 }
@@ -122,54 +133,96 @@ func (r *Runtime) Execute(ctx context.Context, run models.Run, host models.Host,
 				Memory: memory,
 			}, nil
 		}
-
+		plans := make([]plannedToolCall, 0, len(response.ToolCalls))
+		batchRequests := make([]approval.BatchRequest, 0, len(response.ToolCalls))
 		for _, call := range response.ToolCalls {
+			plan := plannedToolCall{call: call}
 			preview, err := r.registry.Preview(call)
 			if err != nil {
-				toolMessage := models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: "tool error: " + err.Error()}
-				messages = append(messages, toolMessage)
-				currentTurnMessages = append(currentTurnMessages, toolMessage)
+				plan.message = "tool error: " + err.Error()
+				plan.toolHistory = call.Function.Name + ": preview error"
+				plans = append(plans, plan)
 				continue
 			}
-			rule := r.policy.Check(preview)
-			policyHistory = append(policyHistory, rule)
+			plan.preview = preview
+			plan.rule = r.policy.Check(preview)
+			policyHistory = append(policyHistory, plan.rule)
 			_ = r.RecordEvent(models.Event{
 				ID:        models.NewID("event"),
 				RunID:     run.ID,
 				Type:      "run.policy_checked",
-				Message:   rule.Reason,
-				Payload:   map[string]any{"tool_name": preview.ToolName, "decision": rule.Decision, "scope": rule.Scope},
+				Message:   plan.rule.Reason,
+				Payload:   map[string]any{"tool_name": preview.ToolName, "decision": plan.rule.Decision, "scope": plan.rule.Scope},
 				Timestamp: time.Now().UTC(),
 			})
-
-			if rule.Decision == models.PolicyDecisionDeny {
-				toolMessage := models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: "tool denied by policy: " + rule.Reason}
-				messages = append(messages, toolMessage)
-				currentTurnMessages = append(currentTurnMessages, toolMessage)
-				toolHistory = append(toolHistory, preview.ToolName+": denied")
-				continue
+			switch {
+			case plan.rule.Decision == models.PolicyDecisionAllow:
+				plan.execute = true
+			case plan.rule.Decision == models.PolicyDecisionAsk && settings.BypassApprovals:
+				plan.execute = true
+				_ = r.RecordEvent(models.Event{
+					ID:        models.NewID("event"),
+					RunID:     run.ID,
+					Type:      "run.approval_bypassed",
+					Message:   "bypass mode auto-approved tool execution",
+					Payload:   map[string]any{"tool_name": preview.ToolName, "scope": plan.rule.Scope},
+					Timestamp: time.Now().UTC(),
+				})
+			default:
+				batchRequests = append(batchRequests, approval.BatchRequest{
+					ToolCall: call,
+					Preview:  preview,
+					Rule:     plan.rule,
+				})
 			}
+			plans = append(plans, plan)
+		}
 
-			if rule.Decision == models.PolicyDecisionAsk {
-				approvalRecord, approved, err := r.approvals.Wait(ctx, run.ID, preview, rule)
-				if err != nil {
-					return models.ExecutionResult{}, err
-				}
-				if !approved {
-					toolMessage := models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: "tool denied by approval: " + approvalRecord.Reason}
-					messages = append(messages, toolMessage)
-					currentTurnMessages = append(currentTurnMessages, toolMessage)
-					toolHistory = append(toolHistory, preview.ToolName+": approval denied")
+		if len(batchRequests) > 0 {
+			resolvedApprovals, err := r.approvals.WaitBatch(ctx, run.ID, batchRequests)
+			if err != nil {
+				return models.ExecutionResult{}, err
+			}
+			approvalByToolCallID := make(map[string]models.Approval, len(resolvedApprovals))
+			for _, item := range resolvedApprovals {
+				approvalByToolCallID[item.ToolCallID] = item
+			}
+			for idx := range plans {
+				item, ok := approvalByToolCallID[plans[idx].call.ID]
+				if !ok {
 					continue
 				}
+				plans[idx].approval = &item
+				if item.Decision == models.ApprovalDecisionApprove || item.Decision == models.ApprovalDecisionForceApprove {
+					plans[idx].execute = true
+					plans[idx].policyOverride = item.Decision == models.ApprovalDecisionForceApprove
+					continue
+				}
+				plans[idx].message = renderRejectedToolMessage(item)
+				plans[idx].toolHistory = formatToolHistoryEntry(plans[idx].preview.ToolName, plans[idx].message)
+			}
+		}
+
+		for _, plan := range plans {
+			if !plan.execute {
+				if strings.TrimSpace(plan.message) == "" {
+					continue
+				}
+				toolMessage := models.ChatMessage{Role: "tool", ToolCallID: plan.call.ID, Content: plan.message}
+				messages = append(messages, toolMessage)
+				currentTurnMessages = append(currentTurnMessages, toolMessage)
+				if strings.TrimSpace(plan.toolHistory) != "" {
+					toolHistory = append(toolHistory, plan.toolHistory)
+				}
+				continue
 			}
 
 			_ = r.RecordEvent(models.Event{
 				ID:        models.NewID("event"),
 				RunID:     run.ID,
 				Type:      "run.tool_running",
-				Message:   preview.ToolName,
-				Payload:   map[string]any{"command_preview": truncateMiddle(preview.CommandPreview, maxCommandPreviewEventChars)},
+				Message:   plan.preview.ToolName,
+				Payload:   map[string]any{"command_preview": truncateMiddle(plan.preview.CommandPreview, maxCommandPreviewEventChars)},
 				Timestamp: time.Now().UTC(),
 			})
 
@@ -186,24 +239,25 @@ func (r *Runtime) Execute(ctx context.Context, run models.Run, host models.Host,
 					Timestamp: time.Now().UTC(),
 				})
 			})
-			record, err := r.registry.Execute(ctx, host, call, streamSink, settings)
-			record.ToolCallID = call.ID
-
-			toolText := record.ModelResult
-			if err != nil {
-				toolText = strings.TrimSpace("tool error: " + err.Error() + "\n" + firstNonEmpty(record.ModelResult, record.RawResult))
+			record, err := r.registry.Execute(ctx, host, plan.call, streamSink, settings)
+			record.ToolCallID = plan.call.ID
+			if plan.approval != nil {
+				record.ApprovalID = plan.approval.ID
 			}
-			toolMessage := models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: toolText}
+			record.PolicyOverride = plan.policyOverride
+
+			toolText := renderToolMessageText(record, err)
+			toolMessage := models.ChatMessage{Role: "tool", ToolCallID: plan.call.ID, Content: toolText}
 			messages = append(messages, toolMessage)
 			currentTurnMessages = append(currentTurnMessages, toolMessage)
 			toolResults = append(toolResults, record)
-			toolHistory = append(toolHistory, formatToolHistoryEntry(preview.ToolName, firstNonEmpty(record.ModelResult, record.RawResult)))
+			toolHistory = append(toolHistory, formatToolHistoryEntry(plan.preview.ToolName, firstNonEmpty(record.ModelResult, record.RawResult, toolText)))
 			_ = r.RecordEvent(models.Event{
 				ID:        models.NewID("event"),
 				RunID:     run.ID,
 				Type:      "run.tool_finished",
-				Message:   preview.ToolName,
-				Payload:   map[string]any{"success": err == nil, "truncated": record.Truncated},
+				Message:   plan.preview.ToolName,
+				Payload:   map[string]any{"success": err == nil, "truncated": record.Truncated, "policy_override": plan.policyOverride},
 				Timestamp: time.Now().UTC(),
 			})
 		}
@@ -307,6 +361,27 @@ func (r *Runtime) RecordEvent(event models.Event) error {
 		return r.events.RecordEvent(event)
 	}
 	return nil
+}
+
+func renderRejectedToolMessage(approval models.Approval) string {
+	if approval.PolicyDecision == models.PolicyDecisionDeny {
+		return strings.TrimSpace(fmt.Sprintf("tool blocked by policy and not force-approved: %s\nsafer_alternative: %s", approval.Reason, firstNonEmpty(approval.SaferAlternative, "none")))
+	}
+	return strings.TrimSpace(fmt.Sprintf("tool denied by approval: %s\nsafer_alternative: %s", approval.Reason, firstNonEmpty(approval.SaferAlternative, "none")))
+}
+
+func renderToolMessageText(record models.ToolExecutionRecord, err error) string {
+	parts := make([]string, 0, 3)
+	if record.PolicyOverride {
+		parts = append(parts, "policy_override=true")
+	}
+	if err != nil {
+		parts = append(parts, "tool error: "+err.Error())
+	}
+	if body := strings.TrimSpace(firstNonEmpty(record.ModelResult, record.RawResult)); body != "" {
+		parts = append(parts, body)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func (r *Runtime) systemPrompt(snapshot models.ContextSnapshot) string {

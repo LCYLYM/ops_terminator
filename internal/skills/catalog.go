@@ -15,6 +15,10 @@ type Catalog struct {
 	items []models.SkillDefinition
 }
 
+func Empty() *Catalog {
+	return &Catalog{}
+}
+
 func Load(dir string) (*Catalog, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.json"))
 	if err != nil {

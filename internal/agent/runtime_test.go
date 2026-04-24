@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -30,6 +31,15 @@ func (f *fakeClient) StreamChatCompletion(_ context.Context, messages []models.C
 type fakeRecorder struct{}
 
 func (fakeRecorder) RecordEvent(models.Event) error { return nil }
+
+type collectingRecorder struct {
+	events []models.Event
+}
+
+func (r *collectingRecorder) RecordEvent(event models.Event) error {
+	r.events = append(r.events, event)
+	return nil
+}
 
 func TestRuntimeExecutesToolLoop(t *testing.T) {
 	client := &fakeClient{
@@ -192,5 +202,96 @@ func TestRuntimeUsesConfiguredMaxAgentSteps(t *testing.T) {
 	}
 	if len(client.calls) != 2 {
 		t.Fatalf("expected exactly 2 model calls, got %d", len(client.calls))
+	}
+}
+
+func TestRuntimeReturnsWholeToolBatchInSingleFollowupRequest(t *testing.T) {
+	client := &fakeClient{
+		responses: []*models.AssistantResponse{
+			{ToolCalls: []models.ToolCall{
+				{ID: "1", Type: "function", Function: models.ToolFunctionCall{Name: "hello_capability", Arguments: "{}"}},
+				{ID: "2", Type: "function", Function: models.ToolFunctionCall{Name: "hello_capability", Arguments: "{}"}},
+			}},
+			{Content: "done"},
+		},
+	}
+	recorder := &collectingRecorder{}
+	registry := builtin.NewRegistry(runner.NewExecutor(0, ""))
+	runtime := New(client, registry, policy.New(), approval.NewManager(nil, recorder), recorder)
+
+	result, err := runtime.Execute(context.Background(), models.Run{ID: "run-parallel"}, models.Host{Mode: models.HostModeLocal}, models.ConversationContext{
+		Session: models.Session{},
+		CurrentTurn: models.Turn{
+			UserInput: "call tools",
+			ContextSnapshot: models.ContextSnapshot{
+				PolicySummary: "policy",
+			},
+		},
+		RuntimeSettings: models.DefaultRuntimeSettings(),
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if result.FinalResponse != "done" {
+		t.Fatalf("unexpected final response: %q", result.FinalResponse)
+	}
+	if len(result.ToolResults) != 2 {
+		t.Fatalf("expected both tools to execute, got %d", len(result.ToolResults))
+	}
+	if len(client.calls) != 2 {
+		t.Fatalf("expected one follow-up model request after the full tool batch, got %d calls", len(client.calls))
+	}
+	followup := client.calls[1]
+	if len(followup) < 2 {
+		t.Fatalf("expected batched tool messages in follow-up request, got %+v", followup)
+	}
+	last := followup[len(followup)-1]
+	prev := followup[len(followup)-2]
+	if prev.ToolCallID != "1" || last.ToolCallID != "2" {
+		t.Fatalf("expected follow-up request to include both tool results in order, got %+v", followup)
+	}
+}
+
+func TestRuntimeBypassApprovalsExecutesAskDecisionWithoutWaiting(t *testing.T) {
+	outputPath := t.TempDir() + "/bypass.txt"
+	client := &fakeClient{
+		responses: []*models.AssistantResponse{
+			{ToolCalls: []models.ToolCall{{ID: "1", Type: "function", Function: models.ToolFunctionCall{Name: "run_shell", Arguments: fmt.Sprintf(`{"command":"printf bypass > %s"}`, outputPath)}}}},
+			{Content: "done"},
+		},
+	}
+	recorder := &collectingRecorder{}
+	registry := builtin.NewRegistry(runner.NewExecutor(0, ""))
+	runtime := New(client, registry, policy.New(), approval.NewManager(nil, recorder), recorder)
+	settings := models.DefaultRuntimeSettings()
+	settings.BypassApprovals = true
+
+	result, err := runtime.Execute(context.Background(), models.Run{ID: "run-bypass"}, models.Host{Mode: models.HostModeLocal}, models.ConversationContext{
+		Session: models.Session{},
+		CurrentTurn: models.Turn{
+			UserInput: "run command",
+			ContextSnapshot: models.ContextSnapshot{
+				PolicySummary: "policy",
+			},
+		},
+		RuntimeSettings: settings,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if result.FinalResponse != "done" {
+		t.Fatalf("unexpected final response: %q", result.FinalResponse)
+	}
+	if len(result.ToolResults) != 1 {
+		t.Fatalf("expected bypassed tool execution, got %d results", len(result.ToolResults))
+	}
+	foundBypassEvent := false
+	for _, event := range recorder.events {
+		if event.Type == "run.approval_bypassed" {
+			foundBypassEvent = true
+		}
+	}
+	if !foundBypassEvent {
+		t.Fatal("expected bypass event")
 	}
 }

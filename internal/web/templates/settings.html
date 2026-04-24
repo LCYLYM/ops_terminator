@@ -142,12 +142,19 @@
           </div>
           <div class="app-card-body">
             <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              <label class="block">
-                <span class="font-label text-label text-on-surface block mb-2">单次 Run 最大 Agent 步数</span>
-                <input id="settings-max-agent-steps-input" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface font-mono" type="number" min="1" step="1">
-              </label>
-              <label class="block">
-                <span class="font-label text-label text-on-surface block mb-2">上下文软上限 Token</span>
+	              <label class="block">
+	                <span class="font-label text-label text-on-surface block mb-2">单次 Run 最大 Agent 步数</span>
+	                <input id="settings-max-agent-steps-input" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface font-mono" type="number" min="1" step="1">
+	              </label>
+	              <label class="flex min-h-[48px] items-center gap-3 rounded-[14px] border border-[#C96442]/35 bg-[#FFF7F3] px-4 py-3">
+	                <input id="settings-bypass-approvals-input" class="rounded border-[#C96442] text-[#C96442] focus:ring-[#C96442]" type="checkbox">
+	                <span class="flex flex-col">
+	                  <span class="font-label text-label text-on-surface">Bypass 审批模式</span>
+	                  <span class="font-body-sm text-body-sm text-[#9A4E35]">自动通过需审批工具；策略硬拒绝仍然生效。</span>
+	                </span>
+	              </label>
+	              <label class="block">
+	                <span class="font-label text-label text-on-surface block mb-2">上下文软上限 Token</span>
                 <input id="settings-context-soft-limit-input" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface font-mono" type="number" min="1000" step="100">
               </label>
               <label class="block">

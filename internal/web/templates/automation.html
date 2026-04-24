@@ -5,26 +5,26 @@
         <div class="app-card">
           <div class="flex items-start justify-between mb-8">
             <div class="w-14 h-14 rounded-full bg-surface-container flex items-center justify-center text-primary">
-              <span class="material-symbols-outlined">check_circle</span>
+              <span class="material-symbols-outlined">bolt</span>
             </div>
-            <span class="automation-stat-badge bg-[#e7f6f7] text-[#168d92]">今日成功率</span>
+            <span class="automation-stat-badge bg-[#e7f6f7] text-[#168d92]">已启用规则</span>
           </div>
           <div class="flex items-end gap-2">
-            <span id="automation-success-rate" class="font-h1 text-h1 text-on-surface leading-none">--</span>
-            <span id="automation-success-meta" class="font-body-md text-body-md text-secondary mb-2">/ --</span>
+            <span id="automation-enabled-count" class="font-h1 text-h1 text-on-surface leading-none">0</span>
+            <span class="font-body-md text-body-md text-secondary mb-2">条</span>
           </div>
         </div>
 
         <div class="app-card">
           <div class="flex items-start justify-between mb-8">
             <div class="w-14 h-14 rounded-full bg-surface-container flex items-center justify-center text-primary">
-              <span class="material-symbols-outlined">autorenew</span>
+              <span class="material-symbols-outlined">warning</span>
             </div>
-            <span class="automation-stat-badge bg-[#fff1ec] text-[#c96442]">运行中任务</span>
+            <span class="automation-stat-badge bg-[#fff1ec] text-[#c96442]">最近触发</span>
           </div>
           <div class="flex items-end gap-2">
-            <span id="automation-running-count" class="font-h1 text-h1 text-on-surface leading-none">0</span>
-            <span class="font-body-md text-body-md text-secondary mb-2">个活跃流</span>
+            <span id="automation-triggered-count" class="font-h1 text-h1 text-on-surface leading-none">0</span>
+            <span class="font-body-md text-body-md text-secondary mb-2">条</span>
           </div>
         </div>
 
@@ -33,25 +33,112 @@
             <div class="w-14 h-14 rounded-full bg-error-container flex items-center justify-center text-error">
               <span class="material-symbols-outlined">error</span>
             </div>
-            <span class="automation-stat-badge bg-[#ffeceb] text-[#cb3f38]">异常警告</span>
+            <span class="automation-stat-badge bg-[#ffeceb] text-[#cb3f38]">需干预</span>
           </div>
           <div class="flex items-end gap-2">
-            <span id="automation-failed-count" class="font-h1 text-h1 text-error leading-none">0</span>
-            <span class="font-body-md text-body-md text-secondary mb-2">需干预</span>
+            <span id="automation-alert-count" class="font-h1 text-h1 text-error leading-none">0</span>
+            <span class="font-body-md text-body-md text-secondary mb-2">条</span>
           </div>
         </div>
       </div>
 
-      <section class="app-card automation-run-card">
-        <div class="app-card-head">
-          <div>
-            <h3 class="app-card-title">近期执行历史 (Runs)</h3>
-            <p class="app-card-subtitle">点击任意执行即可跳回对应会话。</p>
+      <div class="app-section-grid app-section-grid--two">
+        <section class="app-card automation-run-card">
+          <div class="app-card-head">
+            <div>
+              <h3 class="app-card-title">自动化规则</h3>
+              <p class="app-card-subtitle">阈值命中后直接通过统一 run 链路触发 AI 运维。</p>
+            </div>
+            <span id="automation-rule-total" class="app-count-badge">0</span>
           </div>
-          <span id="automation-run-total" class="app-count-badge">0</span>
-        </div>
-        <div id="automation-run-list"></div>
-      </section>
+          <div id="automation-rule-list"></div>
+        </section>
+
+        <section class="app-card automation-rule-form-card">
+          <div class="app-card-head">
+            <div>
+              <h3 id="automation-form-title" class="app-card-title">新增规则</h3>
+              <p id="automation-form-subtitle" class="app-card-subtitle">配置主机、指标阈值、冷却时间和触发提示词。</p>
+            </div>
+          </div>
+          <div class="app-card-body">
+            <form id="automation-form" class="space-y-4">
+              <input id="automation-rule-id" type="hidden">
+              <label class="block">
+                <span class="font-label text-label text-on-surface block mb-2">规则名称</span>
+                <input id="automation-name" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface" type="text" placeholder="例如：CPU 持续过高告警">
+              </label>
+              <label class="block">
+                <span class="font-label text-label text-on-surface block mb-2">目标主机</span>
+                <select id="automation-host" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface"></select>
+              </label>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <label class="block">
+                  <span class="font-label text-label text-on-surface block mb-2">指标</span>
+                  <select id="automation-metric" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface">
+                    <option value="cpu_usage">CPU 使用率</option>
+                    <option value="memory_usage">内存使用率</option>
+                    <option value="disk_usage">磁盘使用率</option>
+                    <option value="inode_usage">inode 使用率</option>
+                  </select>
+                </label>
+                <label class="block">
+                  <span class="font-label text-label text-on-surface block mb-2">比较符</span>
+                  <select id="automation-operator" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface">
+                    <option value=">">大于</option>
+                    <option value=">=">大于等于</option>
+                    <option value="<">小于</option>
+                    <option value="<=">小于等于</option>
+                  </select>
+                </label>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <label class="block">
+                  <span class="font-label text-label text-on-surface block mb-2">阈值</span>
+                  <input id="automation-threshold" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface font-mono" type="number" step="0.1" min="0">
+                </label>
+                <label class="block">
+                  <span class="font-label text-label text-on-surface block mb-2">观测窗口(分钟)</span>
+                  <input id="automation-window" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface font-mono" type="number" min="1" step="1">
+                </label>
+                <label class="block">
+                  <span class="font-label text-label text-on-surface block mb-2">冷却时间(分钟)</span>
+                  <input id="automation-cooldown" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface font-mono" type="number" min="1" step="1">
+                </label>
+              </div>
+              <label class="block">
+                <span class="font-label text-label text-on-surface block mb-2">触发提示词</span>
+                <textarea id="automation-prompt" class="w-full min-h-[120px] rounded-[14px] border border-surface-variant bg-surface px-4 py-3 text-on-surface resize-y" placeholder="例如：CPU 超阈值，请先定位主要进程，再给出处理建议。"></textarea>
+              </label>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <label class="flex items-center gap-3 rounded-[14px] border border-surface-variant bg-surface px-4 py-3">
+                  <input id="automation-enabled" type="checkbox" checked>
+                  <span class="font-body-sm text-body-sm text-on-surface">启用规则</span>
+                </label>
+                <label class="flex items-center gap-3 rounded-[14px] border border-surface-variant bg-surface px-4 py-3">
+                  <input id="automation-bypass" type="checkbox">
+                  <span class="font-body-sm text-body-sm text-on-surface">触发时启用 bypass</span>
+                </label>
+                <label class="flex items-center gap-3 rounded-[14px] border border-surface-variant bg-surface px-4 py-3">
+                  <input id="automation-force-approve" type="checkbox">
+                  <span class="font-body-sm text-body-sm text-on-surface">允许 force approve</span>
+                </label>
+              </div>
+              <div class="flex flex-wrap gap-3">
+                <button id="automation-save" class="app-primary-button app-primary-button--inline" type="submit">
+                  <span class="material-symbols-outlined">save</span>
+                  <span>保存规则</span>
+                </button>
+                <button id="automation-reset" class="app-button-secondary" type="reset">
+                  <span class="material-symbols-outlined">refresh</span>
+                  <span>重置</span>
+                </button>
+              </div>
+              <p id="automation-form-message" class="font-body-sm text-body-sm text-on-surface-variant">规则保存后会由后台持续采样并在阈值命中时创建真实 run。</p>
+            </form>
+          </div>
+        </section>
+      </div>
     </section>
   </div>
 {{- end }}

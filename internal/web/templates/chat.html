@@ -30,20 +30,25 @@
           <div class="app-chat-column" id="chat-history"></div>
         </div>
 
-        <div class="app-chat-input-zone">
-          <div class="app-chat-input-inner">
-            <div class="app-chat-composer-bar">
-              <label class="app-chat-host-picker" for="chat-host-select">
-                <span>目标主机</span>
-                <select id="chat-host-select"></select>
-              </label>
-              <span id="chat-host-selection-label" class="app-chat-host-selection-label">等待加载主机...</span>
-            </div>
-            <form id="chat-form" class="bg-surface-container-lowest border border-[#E2E2DB] shadow-sm focus-within:border-[#C96442] focus-within:ring-1 focus-within:ring-[#C96442] transition-all">
-              <textarea id="chat-input" class="w-full bg-transparent border-none font-body-md text-body-md text-on-surface placeholder:text-outline-variant resize-none focus:ring-0" placeholder="输入运维指令或问题..." rows="1"></textarea>
-              <button class="absolute bg-[#F5F4ED] hover:bg-[#E6E4D9] text-[#C96442] transition-colors flex items-center justify-center" type="submit">
-                <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">send</span>
-              </button>
+	        <div class="app-chat-input-zone">
+	          <div class="app-chat-input-inner">
+	            <div id="chat-approval-bar" class="app-chat-approval-bar"></div>
+	            <div class="app-chat-composer-bar">
+	              <label class="app-chat-host-picker" for="chat-host-select">
+	                <span>目标主机</span>
+	                <select id="chat-host-select"></select>
+	              </label>
+	              <span id="chat-host-selection-label" class="app-chat-host-selection-label">等待加载主机...</span>
+	            </div>
+	            <label class="app-chat-bypass-toggle">
+	              <input id="chat-bypass-toggle" type="checkbox">
+	              <span>Bypass 审批模式</span>
+	            </label>
+	            <form id="chat-form" class="bg-surface-container-lowest border border-[#E2E2DB] shadow-sm focus-within:border-[#C96442] focus-within:ring-1 focus-within:ring-[#C96442] transition-all">
+	              <textarea id="chat-input" class="w-full bg-transparent border-none font-body-md text-body-md text-on-surface placeholder:text-outline-variant resize-none focus:ring-0" placeholder="输入运维指令或问题..." rows="1"></textarea>
+	              <button class="absolute bg-[#F5F4ED] hover:bg-[#E6E4D9] text-[#C96442] transition-colors flex items-center justify-center" type="submit">
+	                <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">send</span>
+	              </button>
             </form>
             <p id="chat-composer-note" class="app-chat-helper">所有请求都经过统一 gateway、policy 和真实执行链路。</p>
           </div>

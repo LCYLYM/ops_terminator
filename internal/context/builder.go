@@ -17,8 +17,11 @@ type Builder struct {
 	policy *policy.Engine
 }
 
-func NewBuilder(skills *skills.Catalog, tools *builtin.Registry, policy *policy.Engine) *Builder {
-	return &Builder{skills: skills, tools: tools, policy: policy}
+func NewBuilder(skillCatalog *skills.Catalog, tools *builtin.Registry, policy *policy.Engine) *Builder {
+	if skillCatalog == nil {
+		skillCatalog = skills.Empty()
+	}
+	return &Builder{skills: skillCatalog, tools: tools, policy: policy}
 }
 
 func (b *Builder) Build(host models.Host, session models.Session, userInput string) models.ContextSnapshot {

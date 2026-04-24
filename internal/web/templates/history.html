@@ -1,0 +1,38 @@
+{{ define "page_content" -}}
+  <div class="app-content-inner">
+    <section class="app-page-stack">
+      <section class="app-card">
+        <div class="app-card-head">
+          <div>
+            <h3 class="app-card-title">历史筛选</h3>
+            <p class="app-card-subtitle">按关键字、待审批、强制放行快速收敛真实历史。</p>
+          </div>
+        </div>
+        <div class="app-card-body">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <input id="history-search" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface" type="search" placeholder="搜索 session / run / 主机 / 摘要">
+            <label class="flex items-center gap-3 rounded-[14px] border border-surface-variant bg-surface px-4 py-3">
+              <input id="history-only-pending" type="checkbox">
+              <span class="font-body-sm text-body-sm text-on-surface">仅看待审批</span>
+            </label>
+            <label class="flex items-center gap-3 rounded-[14px] border border-surface-variant bg-surface px-4 py-3">
+              <input id="history-only-force" type="checkbox">
+              <span class="font-body-sm text-body-sm text-on-surface">仅看 Force approve</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section class="app-card">
+        <div class="app-card-head">
+          <div>
+            <h3 class="app-card-title">会话历史</h3>
+            <p class="app-card-subtitle">点击任意条目回到聊天工作台对应会话。</p>
+          </div>
+          <span id="history-session-total" class="app-count-badge">0</span>
+        </div>
+        <div id="history-session-list"></div>
+      </section>
+    </section>
+  </div>
+{{- end }}

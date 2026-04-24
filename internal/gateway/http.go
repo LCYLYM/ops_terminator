@@ -14,6 +14,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/settings/gateway", s.handleGatewaySettings)
 	mux.HandleFunc("/api/hosts", s.handleHosts)
+	mux.HandleFunc("/api/automations", s.handleAutomations)
+	mux.HandleFunc("/api/automations/", s.handleAutomationRoutes)
 	mux.HandleFunc("/api/sessions", s.handleSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSessionRoutes)
 	mux.HandleFunc("/api/runs", s.handleRuns)
@@ -119,16 +121,39 @@ func (s *Service) handleSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/")
+	if strings.HasSuffix(path, "/mode") {
+		id := strings.TrimSuffix(path, "/mode")
+		if id == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var mode models.SessionMode
+		if err := json.NewDecoder(r.Body).Decode(&mode); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		session, err := s.UpdateSessionMode(id, mode)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, session)
+		return
+	}
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/")
-	if id == "" {
+	if path == "" {
 		http.NotFound(w, r)
 		return
 	}
-	detail, found, err := s.GetSessionDetail(id)
+	detail, found, err := s.GetSessionDetail(path)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -138,6 +163,119 @@ func (s *Service) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func (s *Service) handleAutomations(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		items, err := s.ListAutomations()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	case http.MethodPost, http.MethodPut:
+		var rule models.AutomationRule
+		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		saved, err := s.SaveAutomation(rule)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, saved)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) handleAutomationRoutes(w http.ResponseWriter, r *http.Request) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/automations/"), "/")
+	if path == "" {
+		http.NotFound(w, r)
+		return
+	}
+	parts := strings.Split(path, "/")
+	automationID := parts[0]
+	if len(parts) == 1 {
+		s.handleAutomationItem(w, r, automationID)
+		return
+	}
+	if len(parts) != 2 {
+		http.NotFound(w, r)
+		return
+	}
+	switch parts[1] {
+	case "sample":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		sample, err := s.SampleAutomation(r.Context(), automationID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, sample)
+	case "test":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var request struct {
+			Force bool `json:"force"`
+		}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&request)
+		}
+		result, err := s.TestAutomation(r.Context(), automationID, request.Force)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Service) handleAutomationItem(w http.ResponseWriter, r *http.Request, automationID string) {
+	switch r.Method {
+	case http.MethodGet:
+		item, found, err := s.GetAutomation(automationID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !found {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
+	case http.MethodPut:
+		var rule models.AutomationRule
+		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		rule.ID = automationID
+		saved, err := s.SaveAutomation(rule)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, saved)
+	case http.MethodDelete:
+		if err := s.DeleteAutomation(automationID); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": automationID})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Service) handleRunRoutes(w http.ResponseWriter, r *http.Request) {

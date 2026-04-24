@@ -80,6 +80,7 @@ func runServe() error {
 	fmt.Printf("OSAgent product MVP listening on http://127.0.0.1%s\n", cfg.ServerAddr)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	service.StartAutomationLoop(ctx)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -214,6 +215,7 @@ func buildService() (*gateway.Service, config.Config, error) {
 	service := gateway.NewService(storeImpl, hub, builder, nil, logger)
 	service.SetLLMClient(llmClient)
 	service.SetGatewayConfig(gatewayConfig)
+	service.SetExecutor(executor)
 	approvalManager := approval.NewManager(storeImpl, service)
 	service.SetApprovals(approvalManager)
 	runtime := agent.New(llmClient, registry, policyEngine, approvalManager, service)

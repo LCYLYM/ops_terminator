@@ -13,6 +13,7 @@ import (
 	"osagentmvp/internal/events"
 	"osagentmvp/internal/models"
 	"osagentmvp/internal/policy"
+	"osagentmvp/internal/runner"
 	"osagentmvp/internal/store"
 )
 
@@ -28,6 +29,7 @@ type Service struct {
 	approvals ApprovalResolver
 	logger    *log.Logger
 	llmClient GatewayClient
+	executor  *runner.Executor
 
 	settingsMu    sync.RWMutex
 	gatewayConfig models.GatewayConfig
@@ -43,10 +45,11 @@ type GatewayClient interface {
 }
 
 type RunRequest struct {
-	HostID      string `json:"host_id"`
-	SessionID   string `json:"session_id,omitempty"`
-	UserInput   string `json:"user_input"`
-	RequestedBy string `json:"requested_by,omitempty"`
+	HostID          string `json:"host_id"`
+	SessionID       string `json:"session_id,omitempty"`
+	UserInput       string `json:"user_input"`
+	RequestedBy     string `json:"requested_by,omitempty"`
+	BypassApprovals *bool  `json:"bypass_approvals,omitempty"`
 }
 
 func NewService(store store.Store, hub *events.Hub, builder *contextbuilder.Builder, runtime Runtime, logger *log.Logger) *Service {
@@ -63,6 +66,10 @@ func (s *Service) SetApprovals(resolver ApprovalResolver) {
 
 func (s *Service) SetLLMClient(client GatewayClient) {
 	s.llmClient = client
+}
+
+func (s *Service) SetExecutor(executor *runner.Executor) {
+	s.executor = executor
 }
 
 func (s *Service) SetGatewayConfig(config models.GatewayConfig) {
@@ -204,6 +211,7 @@ func (s *Service) ListRuns() ([]models.RunView, error) {
 			SessionPreview:   sessionPreview(session),
 			HostDisplayName:  host.DisplayName,
 			PendingApprovals: state.pendingApprovalCountByRun[run.ID],
+			HasForceApprove:  state.forceApprovedByRun[run.ID],
 			LatestAssistant:  firstNonEmpty(run.FinalResponse, run.FailureMessage),
 			LastEventAt:      runLastActivity(run),
 			LastEventType:    runEventType(run),
@@ -290,6 +298,202 @@ func (s *Service) ListSessions() ([]models.SessionView, error) {
 	return items, nil
 }
 
+func (s *Service) ListAutomations() ([]models.AutomationRuleView, error) {
+	items, err := s.store.ListAutomations()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]models.AutomationRuleView, 0, len(items))
+	for _, item := range items {
+		host, _, _ := s.store.GetHost(item.HostID)
+		result = append(result, models.AutomationRuleView{
+			AutomationRule:  item,
+			HostDisplayName: host.DisplayName,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].UpdatedAt.After(result[j].UpdatedAt)
+	})
+	return result, nil
+}
+
+func (s *Service) GetAutomation(id string) (models.AutomationRuleView, bool, error) {
+	rule, found, err := s.store.GetAutomation(strings.TrimSpace(id))
+	if err != nil || !found {
+		return models.AutomationRuleView{}, found, err
+	}
+	host, _, _ := s.store.GetHost(rule.HostID)
+	return models.AutomationRuleView{AutomationRule: rule, HostDisplayName: host.DisplayName}, true, nil
+}
+
+func (s *Service) SaveAutomation(rule models.AutomationRule) (models.AutomationRule, error) {
+	rule.ID = strings.TrimSpace(rule.ID)
+	rule.Name = strings.TrimSpace(rule.Name)
+	rule.HostID = strings.TrimSpace(rule.HostID)
+	rule.TriggerType = firstNonEmpty(strings.TrimSpace(rule.TriggerType), models.TriggerTypeThreshold)
+	rule.Metric = strings.TrimSpace(rule.Metric)
+	rule.Operator = strings.TrimSpace(rule.Operator)
+	rule.PromptTemplate = strings.TrimSpace(rule.PromptTemplate)
+	rule.SessionStrategy = firstNonEmpty(strings.TrimSpace(rule.SessionStrategy), "reuse")
+	if rule.ID == "" {
+		rule.ID = models.NewID("automation")
+	}
+	if rule.Name == "" {
+		return models.AutomationRule{}, fmt.Errorf("automation name is required")
+	}
+	if rule.HostID == "" {
+		return models.AutomationRule{}, fmt.Errorf("automation host_id is required")
+	}
+	if rule.Metric == "" {
+		return models.AutomationRule{}, fmt.Errorf("automation metric is required")
+	}
+	if rule.Operator == "" {
+		return models.AutomationRule{}, fmt.Errorf("automation operator is required")
+	}
+	if rule.TriggerType != models.TriggerTypeThreshold {
+		return models.AutomationRule{}, fmt.Errorf("unsupported automation trigger_type: %s", rule.TriggerType)
+	}
+	if _, err := automationMetricCommand(rule.Metric); err != nil {
+		return models.AutomationRule{}, err
+	}
+	if !isSupportedAutomationOperator(rule.Operator) {
+		return models.AutomationRule{}, fmt.Errorf("unsupported automation operator: %s", rule.Operator)
+	}
+	if _, found, err := s.store.GetHost(rule.HostID); err != nil {
+		return models.AutomationRule{}, err
+	} else if !found {
+		return models.AutomationRule{}, fmt.Errorf("host not found: %s", rule.HostID)
+	}
+	if rule.WindowMinutes <= 0 {
+		rule.WindowMinutes = 5
+	}
+	if rule.CooldownMinutes <= 0 {
+		rule.CooldownMinutes = 15
+	}
+	if rule.PromptTemplate == "" {
+		rule.PromptTemplate = "阈值触发：请基于当前主机状态排查并处理异常。"
+	}
+	now := time.Now().UTC()
+	current, found, err := s.store.GetAutomation(rule.ID)
+	if err != nil {
+		return models.AutomationRule{}, err
+	}
+	if found {
+		rule.CreatedAt = current.CreatedAt
+		rule.LastTriggeredAt = current.LastTriggeredAt
+		rule.LastRunID = current.LastRunID
+		rule.LastStatus = current.LastStatus
+		rule.LastObservedValue = current.LastObservedValue
+		rule.SessionID = current.SessionID
+	} else {
+		rule.CreatedAt = now
+	}
+	rule.UpdatedAt = now
+	if err := s.store.SaveAutomation(rule); err != nil {
+		return models.AutomationRule{}, err
+	}
+	return rule, nil
+}
+
+func (s *Service) DeleteAutomation(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("automation id is required")
+	}
+	return s.store.DeleteAutomation(id)
+}
+
+func (s *Service) SampleAutomation(ctx context.Context, id string) (models.AutomationSample, error) {
+	rule, found, err := s.store.GetAutomation(strings.TrimSpace(id))
+	if err != nil {
+		return models.AutomationSample{}, err
+	}
+	if !found {
+		return models.AutomationSample{}, fmt.Errorf("automation not found: %s", id)
+	}
+	host, found, err := s.store.GetHost(rule.HostID)
+	if err != nil {
+		return models.AutomationSample{}, err
+	}
+	if !found {
+		return models.AutomationSample{}, fmt.Errorf("host not found: %s", rule.HostID)
+	}
+	value, err := s.sampleAutomationMetric(ctx, host, rule.Metric)
+	if err != nil {
+		return models.AutomationSample{}, err
+	}
+	now := time.Now().UTC()
+	rule.LastObservedValue = value
+	rule.UpdatedAt = now
+	_ = s.store.SaveAutomation(rule)
+	return models.AutomationSample{Metric: rule.Metric, Value: value, CapturedAt: now}, nil
+}
+
+func (s *Service) TestAutomation(ctx context.Context, id string, force bool) (models.AutomationTestResult, error) {
+	rule, found, err := s.store.GetAutomation(strings.TrimSpace(id))
+	if err != nil {
+		return models.AutomationTestResult{}, err
+	}
+	if !found {
+		return models.AutomationTestResult{}, fmt.Errorf("automation not found: %s", id)
+	}
+	host, found, err := s.store.GetHost(rule.HostID)
+	if err != nil {
+		return models.AutomationTestResult{}, err
+	}
+	if !found {
+		return models.AutomationTestResult{}, fmt.Errorf("host not found: %s", rule.HostID)
+	}
+	now := time.Now().UTC()
+	value, err := s.sampleAutomationMetric(ctx, host, rule.Metric)
+	if err != nil {
+		rule.LastStatus = "sample_failed"
+		rule.UpdatedAt = now
+		_ = s.store.SaveAutomation(rule)
+		return models.AutomationTestResult{}, err
+	}
+	sample := models.AutomationSample{Metric: rule.Metric, Value: value, CapturedAt: now}
+	matched := automationThresholdMatched(value, rule.Operator, rule.Threshold)
+	cooldownBlocked := isAutomationCooldownBlocked(rule, now)
+	rule.LastObservedValue = value
+
+	result := models.AutomationTestResult{Rule: rule, Sample: sample, ThresholdMatched: matched, CooldownBlocked: cooldownBlocked}
+	if !matched && !force {
+		rule.LastStatus = "test_threshold_not_matched"
+		rule.UpdatedAt = now
+		_ = s.store.SaveAutomation(rule)
+		result.Rule = rule
+		result.Message = "当前采样未命中阈值；可使用强制测试运行验证完整 AI run 链路。"
+		return result, nil
+	}
+	if cooldownBlocked && !force {
+		rule.LastStatus = "test_cooldown"
+		rule.UpdatedAt = now
+		_ = s.store.SaveAutomation(rule)
+		result.Rule = rule
+		result.Message = "规则仍在冷却期；可使用强制测试运行跳过冷却验证。"
+		return result, nil
+	}
+	run, err := s.createAutomationRun(ctx, rule, value, "automation_test")
+	if err != nil {
+		rule.LastStatus = "test_trigger_failed"
+		rule.UpdatedAt = now
+		_ = s.store.SaveAutomation(rule)
+		return models.AutomationTestResult{}, err
+	}
+	rule.LastTriggeredAt = &now
+	rule.LastRunID = run.ID
+	rule.LastStatus = run.Status
+	rule.SessionID = run.SessionID
+	rule.UpdatedAt = now
+	_ = s.store.SaveAutomation(rule)
+	result.Rule = rule
+	result.RunCreated = true
+	result.Run = &run
+	result.Message = "测试运行已创建，后续执行仍走真实 runtime / policy / approval 链路。"
+	return result, nil
+}
+
 func (s *Service) UpsertHost(host models.Host) (models.Host, error) {
 	host = normalizeHost(host)
 	if err := validateHost(host); err != nil {
@@ -319,6 +523,7 @@ func (s *Service) UpsertHost(host models.Host) (models.Host, error) {
 }
 
 func (s *Service) CreateRun(ctx context.Context, request RunRequest) (models.Run, error) {
+	settings := s.currentRuntimeSettings()
 	host, found, err := s.store.GetHost(request.HostID)
 	if err != nil {
 		return models.Run{}, err
@@ -326,11 +531,10 @@ func (s *Service) CreateRun(ctx context.Context, request RunRequest) (models.Run
 	if !found {
 		return models.Run{}, fmt.Errorf("host not found: %s", request.HostID)
 	}
-	session, err := s.ensureSession(host, request.SessionID, request.UserInput)
+	session, err := s.ensureSession(host, request.SessionID, request.UserInput, models.SessionMode{BypassApprovals: settings.BypassApprovals}, request.BypassApprovals)
 	if err != nil {
 		return models.Run{}, err
 	}
-	settings := s.currentRuntimeSettings()
 	session.Memory, err = s.builder.EnsureHostProfile(ctx, host, session.Memory, settings)
 	if err != nil {
 		return models.Run{}, err
@@ -349,13 +553,15 @@ func (s *Service) CreateRun(ctx context.Context, request RunRequest) (models.Run
 		UpdatedAt:       now,
 	}
 	run := models.Run{
-		ID:        models.NewID("run"),
-		SessionID: session.ID,
-		TurnID:    turn.ID,
-		HostID:    host.ID,
-		Status:    models.RunStatusCreated,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          models.NewID("run"),
+		SessionID:   session.ID,
+		TurnID:      turn.ID,
+		HostID:      host.ID,
+		Status:      models.RunStatusCreated,
+		RequestedBy: request.RequestedBy,
+		Mode:        session.Mode,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	turn.RunID = run.ID
 	session.TurnIDs = append(session.TurnIDs, turn.ID)
@@ -416,24 +622,24 @@ func (s *Service) ResolveApproval(id, decision, actor string) (models.Run, error
 	if !found {
 		return models.Run{}, fmt.Errorf("run not found: %s", approval.RunID)
 	}
-	run.PendingApproval = ""
-	if approved {
-		run.Status = models.RunStatusRunningAgent
-	} else {
-		run.Status = models.RunStatusDenied
-	}
-	run.UpdatedAt = time.Now().UTC()
-	if err := s.store.SaveRun(run); err != nil {
-		return models.Run{}, err
-	}
 	_ = s.RecordEvent(models.Event{
 		ID:        models.NewID("event"),
 		RunID:     run.ID,
 		Type:      "run.approval_resolved",
-		Message:   decision,
-		Payload:   map[string]any{"approval_id": id, "actor": actor},
+		Message:   approval.Decision,
+		Payload:   map[string]any{"approval_id": id, "actor": actor, "approved": approved, "decision_source": approval.DecisionSource},
 		Timestamp: time.Now().UTC(),
 	})
+	if approval.Decision == models.ApprovalDecisionForceApprove {
+		_ = s.store.AppendAudit(models.AuditEntry{
+			ID:        models.NewID("audit"),
+			RunID:     run.ID,
+			Kind:      "policy_force_approved",
+			Summary:   approval.Reason,
+			Payload:   map[string]any{"approval_id": approval.ID, "actor": actor, "tool_name": approval.ToolName, "scope": approval.Scope},
+			CreatedAt: time.Now().UTC(),
+		})
+	}
 	return run, nil
 }
 
@@ -503,7 +709,24 @@ func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error
 		Memory:           session.Memory,
 		Turns:            items,
 		PendingApprovals: pendingApprovals,
+		PendingBatches:   buildPendingApprovalBatches(session.RunIDs, allApprovals, statefulRunsByID(items)),
 	}, true, nil
+}
+
+func (s *Service) UpdateSessionMode(id string, mode models.SessionMode) (models.Session, error) {
+	session, found, err := s.store.GetSession(id)
+	if err != nil {
+		return models.Session{}, err
+	}
+	if !found {
+		return models.Session{}, fmt.Errorf("session not found: %s", id)
+	}
+	session.Mode = mode
+	session.UpdatedAt = time.Now().UTC()
+	if err := s.store.SaveSession(session); err != nil {
+		return models.Session{}, err
+	}
+	return session, nil
 }
 
 func (s *Service) RecordEvent(event models.Event) error {
@@ -558,7 +781,7 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 		Session:         session,
 		CurrentTurn:     turn,
 		HistoricalTurns: historyTurns,
-		RuntimeSettings: s.currentRuntimeSettings(),
+		RuntimeSettings: mergeRunModeIntoSettings(s.currentRuntimeSettings(), run.Mode),
 	})
 	run.ToolHistory = execResult.ToolHistory
 	run.PolicyHistory = execResult.PolicyHistory
@@ -568,6 +791,10 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 		now := time.Now().UTC()
 		run.Status = models.RunStatusFailed
 		run.FailureMessage = execErr.Error()
+		run.PendingApproval = ""
+		run.PendingBatchID = ""
+		run.PendingBatchTotal = 0
+		run.PendingBatchResolved = 0
 		run.CompletedAt = &now
 		run.UpdatedAt = now
 		_ = s.store.SaveRun(run)
@@ -583,6 +810,10 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 
 	now := time.Now().UTC()
 	run.Status = models.RunStatusCompleted
+	run.PendingApproval = ""
+	run.PendingBatchID = ""
+	run.PendingBatchTotal = 0
+	run.PendingBatchResolved = 0
 	run.FinalResponse = execResult.FinalResponse
 	run.CompletedAt = &now
 	run.UpdatedAt = now
@@ -614,7 +845,7 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 	})
 }
 
-func (s *Service) ensureSession(host models.Host, sessionID, userInput string) (models.Session, error) {
+func (s *Service) ensureSession(host models.Host, sessionID, userInput string, defaultMode models.SessionMode, bypassOverride *bool) (models.Session, error) {
 	if sessionID != "" {
 		session, found, err := s.store.GetSession(sessionID)
 		if err != nil {
@@ -624,6 +855,9 @@ func (s *Service) ensureSession(host models.Host, sessionID, userInput string) (
 			if session.HostID != "" && session.HostID != host.ID {
 				return models.Session{}, fmt.Errorf("session %s belongs to host %s, not %s", session.ID, session.HostID, host.ID)
 			}
+			if bypassOverride != nil {
+				session.Mode.BypassApprovals = *bypassOverride
+			}
 			return session, nil
 		}
 	}
@@ -632,8 +866,12 @@ func (s *Service) ensureSession(host models.Host, sessionID, userInput string) (
 		ID:        models.NewID("session"),
 		HostID:    host.ID,
 		Title:     userInput,
+		Mode:      defaultMode,
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	if bypassOverride != nil {
+		session.Mode.BypassApprovals = *bypassOverride
 	}
 	return session, s.store.SaveSession(session)
 }
@@ -711,6 +949,71 @@ func contains(items []string, target string) bool {
 	return false
 }
 
+func statefulRunsByID(items []models.TurnHistoryItem) map[string]models.Run {
+	result := make(map[string]models.Run, len(items))
+	for _, item := range items {
+		result[item.Run.ID] = item.Run
+	}
+	return result
+}
+
+func buildPendingApprovalBatches(sessionRunIDs []string, approvals []models.Approval, runsByID map[string]models.Run) []models.ApprovalBatch {
+	batchesByID := make(map[string]*models.ApprovalBatch)
+	for _, approval := range approvals {
+		if !contains(sessionRunIDs, approval.RunID) {
+			continue
+		}
+		batchID := approval.BatchID
+		if strings.TrimSpace(batchID) == "" {
+			batchID = approval.ID
+		}
+		batch := batchesByID[batchID]
+		if batch == nil {
+			batch = &models.ApprovalBatch{
+				ID:        batchID,
+				RunID:     approval.RunID,
+				Waiting:   true,
+				Executing: false,
+			}
+			batchesByID[batchID] = batch
+		}
+		batch.Approvals = append(batch.Approvals, approval)
+		batch.Total++
+		if approval.Decision != "" {
+			batch.Resolved++
+		}
+		if approval.PolicyDecision == models.PolicyDecisionDeny || approval.Decision == models.ApprovalDecisionForceApprove {
+			batch.HasOverride = true
+		}
+		run := runsByID[approval.RunID]
+		if run.PendingBatchID == batchID && run.Status == models.RunStatusRunningAgent && run.PendingBatchResolved >= run.PendingBatchTotal && run.PendingBatchTotal > 0 {
+			batch.Executing = true
+			batch.Waiting = false
+		}
+	}
+
+	result := make([]models.ApprovalBatch, 0, len(batchesByID))
+	for _, batch := range batchesByID {
+		sort.Slice(batch.Approvals, func(i, j int) bool {
+			return batch.Approvals[i].BatchIndex < batch.Approvals[j].BatchIndex
+		})
+		batch.Completed = batch.Resolved >= batch.Total && batch.Total > 0
+		if !batch.Completed && batch.Resolved == 0 {
+			batch.Waiting = true
+		}
+		if batch.Completed && !batch.Executing {
+			batch.Waiting = false
+		}
+		if batch.Executing || !batch.Completed {
+			result = append(result, *batch)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Approvals[0].CreatedAt.After(result[j].Approvals[0].CreatedAt)
+	})
+	return result
+}
+
 type dashboardState struct {
 	hosts                         []models.Host
 	sessions                      []models.Session
@@ -726,6 +1029,7 @@ type dashboardState struct {
 	pendingApprovalCountByHost    map[string]int
 	pendingApprovalCountBySession map[string]int
 	pendingApprovalCount          int
+	forceApprovedByRun            map[string]bool
 	lastRunStatusByHost           map[string]string
 	lastRunAtByHost               map[string]*time.Time
 	latestRunBySession            map[string]models.Run
@@ -764,6 +1068,7 @@ func (s *Service) loadDashboardState() (dashboardState, error) {
 		pendingApprovalCountBySession: make(map[string]int),
 		lastRunStatusByHost:           make(map[string]string),
 		lastRunAtByHost:               make(map[string]*time.Time),
+		forceApprovedByRun:            make(map[string]bool),
 		latestRunBySession:            make(map[string]models.Run),
 	}
 	for _, host := range hosts {
@@ -789,6 +1094,9 @@ func (s *Service) loadDashboardState() (dashboardState, error) {
 		}
 	}
 	for _, approval := range approvals {
+		if approval.Decision == models.ApprovalDecisionForceApprove {
+			state.forceApprovedByRun[approval.RunID] = true
+		}
 		if approval.Decision != "" {
 			continue
 		}
@@ -843,7 +1151,7 @@ func filterTraceEvents(events []models.Event) []models.Event {
 	result := make([]models.Event, 0, len(events))
 	for _, event := range events {
 		switch event.Type {
-		case "run.created", "run.running_agent", "run.policy_checked", "run.tool_running", "run.tool_finished", "run.waiting_approval", "run.approval_resolved", "run.completed", "run.failed":
+		case "run.created", "run.running_agent", "run.policy_checked", "run.tool_running", "run.tool_finished", "run.waiting_approval", "run.approval_resolved", "run.policy_override_requested", "run.policy_override_resolved", "run.completed", "run.failed":
 			result = append(result, event)
 		}
 	}
@@ -1228,5 +1536,11 @@ func normalizeRuntimeSettings(settings models.RuntimeSettings) models.RuntimeSet
 	if settings.ToolResultTailChars < 0 {
 		settings.ToolResultTailChars = defaults.ToolResultTailChars
 	}
+	return settings
+}
+
+func mergeRunModeIntoSettings(settings models.RuntimeSettings, mode models.SessionMode) models.RuntimeSettings {
+	settings = normalizeRuntimeSettings(settings)
+	settings.BypassApprovals = mode.BypassApprovals
 	return settings
 }

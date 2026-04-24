@@ -8,6 +8,8 @@ const TRACE_EVENT_TYPES = new Set([
   "run.tool_finished",
   "run.waiting_approval",
   "run.approval_resolved",
+  "run.policy_override_requested",
+  "run.policy_override_resolved",
   "run.completed",
   "run.failed",
 ]);
@@ -16,6 +18,8 @@ const REFRESH_EVENT_TYPES = new Set([
   "run.created",
   "run.waiting_approval",
   "run.approval_resolved",
+  "run.policy_override_requested",
+  "run.policy_override_resolved",
   "run.completed",
   "run.failed",
 ]);
@@ -31,6 +35,8 @@ const LIVE_RENDER_EVENT_TYPES = new Set([
   "run.tool_finished",
   "run.waiting_approval",
   "run.approval_resolved",
+  "run.policy_override_requested",
+  "run.policy_override_resolved",
   "run.completed",
   "run.failed",
 ]);
@@ -41,12 +47,14 @@ const state = {
   hosts: [],
   runs: [],
   approvals: [],
+  automations: [],
   sessions: [],
   settingsSelectedPresetId: "",
   selectedHostId: "",
   assetEditingHostId: "",
   currentSessionId: "",
   currentSessionDetail: null,
+  chatComposerBypass: false,
   liveEvents: new Map(),
   eventSource: null,
   streamConnected: false,
@@ -120,6 +128,31 @@ function truncateText(value, limit = 140) {
   return `${text.slice(0, limit - 1)}…`;
 }
 
+function automationStatusLabel(status) {
+  const labels = {
+    healthy: "健康",
+    cooldown: "冷却中",
+    created: "已创建",
+    running_agent: "执行中",
+    waiting_approval: "待审批",
+    completed: "已完成",
+    failed: "失败",
+    sample_failed: "采样失败",
+    trigger_failed: "触发失败",
+    test_threshold_not_matched: "测试未命中",
+    test_cooldown: "测试冷却中",
+    test_trigger_failed: "测试触发失败",
+  };
+  return labels[status] || status || "未触发";
+}
+
+function automationStatusClass(status) {
+  if (["healthy", "completed", "created"].includes(status)) return "text-[#00796B] bg-[#E3F1ED]";
+  if (["cooldown", "running_agent", "waiting_approval", "test_threshold_not_matched", "test_cooldown"].includes(status)) return "text-[#8A5A00] bg-[#FFF5D6]";
+  if (status) return "text-[#9A4021] bg-[#FFF1EC]";
+  return "text-secondary bg-[#E6E4D9]";
+}
+
 function formatTokenCount(value) {
   const count = Number(value || 0);
   if (!count) return "--";
@@ -139,6 +172,7 @@ function runtimeSettings() {
 function runtimeSettingsWithDefaults() {
   return {
     max_agent_steps: 20,
+    bypass_approvals: false,
     context_soft_limit_tokens: 20000,
     compression_trigger_tokens: 16000,
     response_reserve_tokens: 4000,
@@ -260,13 +294,14 @@ function syncSelectedHost() {
 }
 
 async function loadCore() {
-  const [health, gatewaySettings, hosts, runs, approvals, sessions] = await Promise.all([
+  const [health, gatewaySettings, hosts, runs, approvals, sessions, automations] = await Promise.all([
     request("/api/health"),
     request("/api/settings/gateway"),
     request("/api/hosts"),
     request("/api/runs"),
     request("/api/approvals"),
     request("/api/sessions"),
+    request("/api/automations"),
   ]);
   state.health = health;
   state.gatewaySettings = gatewaySettings;
@@ -274,6 +309,7 @@ async function loadCore() {
   state.runs = sortByNewest(runs.items || [], "updated_at");
   state.approvals = sortByNewest(approvals.items || [], "created_at");
   state.sessions = sortByNewest(sessions.items || [], "updated_at");
+  state.automations = sortByNewest(automations.items || [], "updated_at");
   if (!state.settingsSelectedPresetId) {
     state.settingsSelectedPresetId = gatewaySettings.current_preset_id || "";
   }
@@ -289,6 +325,7 @@ async function loadSessionDetail(sessionId) {
   state.currentSessionDetail = await request(`/api/sessions/${sessionId}`);
   state.currentSessionId = sessionId;
   state.selectedHostId = state.currentSessionDetail?.host?.id || state.selectedHostId;
+  state.chatComposerBypass = Boolean(state.currentSessionDetail?.session?.mode?.bypass_approvals ?? runtimeSettingsWithDefaults().bypass_approvals);
   const url = new URL(window.location.href);
   url.searchParams.set("session", sessionId);
   window.history.replaceState({}, "", url.toString());
@@ -370,6 +407,9 @@ function renderPage() {
   switch (page) {
     case "chat":
       renderChat();
+      break;
+    case "history":
+      renderHistory();
       break;
     case "assets":
       renderAssets();
@@ -530,7 +570,8 @@ function renderChatComposer() {
   const select = document.getElementById("chat-host-select");
   const label = document.getElementById("chat-host-selection-label");
   const note = document.getElementById("chat-composer-note");
-  if (!select || !label || !note) return;
+  const bypassToggle = document.getElementById("chat-bypass-toggle");
+  if (!select || !label || !note || !bypassToggle) return;
 
   const locked = Boolean(state.currentSessionDetail?.session?.id);
   const activeHost = findHostById(getDefaultHostId());
@@ -544,6 +585,7 @@ function renderChatComposer() {
     select.disabled = true;
     label.textContent = "请先去资产管理登记一台主机。";
     note.textContent = "所有请求都经过统一 gateway、policy 和真实执行链路。";
+    bypassToggle.checked = runtimeSettingsWithDefaults().bypass_approvals;
     return;
   }
 
@@ -559,8 +601,11 @@ function renderChatComposer() {
   if (!activeHost) {
     label.textContent = "当前目标主机不可用。";
     note.textContent = "所有请求都经过统一 gateway、policy 和真实执行链路。";
+    bypassToggle.checked = composerBypassEnabled();
     return;
   }
+
+  bypassToggle.checked = composerBypassEnabled();
 
   const invalidSSHPasswordEnv = activeHost.mode === "ssh" && !isValidEnvVarName(activeHost.password_env);
   label.textContent = locked
@@ -581,13 +626,14 @@ function renderChatApprovals() {
   const note = document.getElementById("chat-approval-note");
   if (!summary || !note) return;
 
-  const sessionApprovals = state.currentSessionDetail?.pending_approvals || [];
+  const sessionBatches = state.currentSessionDetail?.pending_batches || [];
+  const sessionApprovalCount = sessionBatches.reduce((total, batch) => total + ((batch.approvals || []).filter((item) => !item.decision).length || 0), 0);
   const globalPending = state.approvals.filter((item) => !item.decision);
 
   if (state.currentSessionDetail) {
-    summary.textContent = sessionApprovals.length > 0 ? `当前会话有 ${sessionApprovals.length} 项待审批` : "当前会话无需审批";
-    note.textContent = sessionApprovals.length > 0
-      ? "请直接在对话流中的审批卡片里点击批准或拒绝。"
+    summary.textContent = sessionApprovalCount > 0 ? `当前会话有 ${sessionApprovalCount} 项待审批` : "当前会话无需审批";
+    note.textContent = sessionApprovalCount > 0
+      ? "请在输入框上方的审批条中处理本批工具审批。"
       : globalPending.length > 0
         ? `其它会话还有 ${globalPending.length} 项待审批，切到对应会话后处理。`
         : "当前所有会话都没有待处理审批。";
@@ -595,7 +641,111 @@ function renderChatApprovals() {
   }
 
   summary.textContent = globalPending.length > 0 ? `共有 ${globalPending.length} 项待审批` : "当前没有待审批";
-  note.textContent = globalPending.length > 0 ? "进入对应会话后可在会话内直接审批。" : "审批动作已迁移到对话流，不再依赖侧边栏按钮。";
+  note.textContent = globalPending.length > 0 ? "进入对应会话后可在输入框上方直接审批。" : "审批动作已迁移到输入区上方的批处理审批条。";
+}
+
+function composerBypassEnabled() {
+  return Boolean(state.currentSessionDetail?.session?.mode?.bypass_approvals ?? state.chatComposerBypass);
+}
+
+async function syncComposerBypass(nextValue) {
+  state.chatComposerBypass = Boolean(nextValue);
+  if (!state.currentSessionId || !state.currentSessionDetail?.session?.id) {
+    renderChat();
+    return;
+  }
+  const updated = await request(`/api/sessions/${state.currentSessionDetail.session.id}/mode`, {
+    method: "PUT",
+    body: JSON.stringify({ bypass_approvals: state.chatComposerBypass }),
+  });
+  state.currentSessionDetail.session = updated;
+  state.sessions = state.sessions.map((item) => item.id === updated.id ? { ...item, mode: updated.mode, updated_at: updated.updated_at } : item);
+  renderChat();
+}
+
+function renderChatApprovalBar() {
+  const box = document.getElementById("chat-approval-bar");
+  if (!box) return;
+  const batches = state.currentSessionDetail?.pending_batches || [];
+  box.innerHTML = "";
+  if (batches.length === 0) {
+    box.classList.remove("has-content");
+    return;
+  }
+  box.classList.add("has-content");
+  batches.forEach((batch) => {
+    const node = document.createElement("div");
+    node.className = "app-chat-approval-batch";
+    const approvals = batch.approvals || [];
+    const pendingCount = approvals.filter((item) => !item.decision).length;
+    node.innerHTML = `
+      <div class="app-chat-approval-batch-head">
+        <div>
+          <div class="app-chat-approval-batch-title">审批批次 ${escapeHTML(batch.id)}</div>
+          <div class="app-chat-approval-batch-meta">${batch.executing ? "执行中" : pendingCount > 0 ? `待处理 ${pendingCount} 项` : "已决议，等待执行"}</div>
+        </div>
+      </div>
+    `;
+    const list = document.createElement("div");
+    list.className = "app-chat-approval-batch-list";
+    approvals.forEach((approval) => {
+      const item = document.createElement("div");
+      item.className = `app-chat-approval-item${approval.policy_decision === "deny" ? " is-deny" : ""}`;
+      const badge = approvalDecisionMeta(approval.decision);
+      const needsOverride = approval.policy_decision === "deny";
+      item.innerHTML = `
+        <div class="app-chat-approval-item-head">
+          <div>
+            <div class="app-chat-approval-item-title">${escapeHTML(approval.tool_name)}</div>
+            <div class="app-chat-approval-item-scope">${escapeHTML(approval.scope || "未提供 scope")}</div>
+          </div>
+          <span class="app-approval-inline-badge ${badge.className}">${badge.label}</span>
+        </div>
+        <div class="app-chat-approval-item-reason">${escapeHTML(approval.reason)}</div>
+        ${approval.safer_alternative ? `<div class="app-chat-approval-item-alt">safer: ${escapeHTML(approval.safer_alternative)}</div>` : ""}
+      `;
+      if (!approval.decision && !batch.executing) {
+        const actions = document.createElement("div");
+        actions.className = "app-chat-approval-actions";
+        const positive = document.createElement("button");
+        positive.type = "button";
+        positive.dataset.id = approval.id;
+        positive.dataset.decision = needsOverride ? "force_approve" : "approve";
+        positive.textContent = needsOverride ? "Force approve" : "Approve";
+        const negative = document.createElement("button");
+        negative.type = "button";
+        negative.dataset.id = approval.id;
+        negative.dataset.decision = "reject";
+        negative.textContent = "Reject";
+        actions.appendChild(positive);
+        actions.appendChild(negative);
+        actions.querySelectorAll("button").forEach((button) => {
+          button.addEventListener("click", async (event) => {
+            const current = event.currentTarget;
+            actions.querySelectorAll("button").forEach((itemButton) => {
+              itemButton.disabled = true;
+            });
+            try {
+              await request(`/api/approvals/${current.dataset.id}/resolve`, {
+                method: "POST",
+                body: JSON.stringify({ decision: current.dataset.decision, actor: "web" }),
+              });
+              scheduleRefresh({ detail: true });
+            } catch (error) {
+              actions.querySelectorAll("button").forEach((itemButton) => {
+                itemButton.disabled = false;
+              });
+              current.textContent = `失败：${error.message}`;
+            }
+          });
+        });
+        item.appendChild(actions);
+      }
+      list.appendChild(item);
+    });
+    node.appendChild(list);
+    box.appendChild(node);
+  });
 }
 
 function renderChatHealth() {
@@ -651,6 +801,7 @@ function renderChat() {
   renderSessionList();
   renderChatSummary();
   renderChatComposer();
+  renderChatApprovalBar();
   renderChatApprovals();
   renderChatHealth();
   renderChatTrace();
@@ -738,33 +889,8 @@ function renderAssistantTrace(turn, run, replay, approvals) {
         </div>
         <div class="app-approval-inline-text">${escapeHTML(approval.reason)}</div>
         <div class="app-approval-inline-scope">${escapeHTML(approval.scope || "未提供 scope")}</div>
-        ${approval.decision ? "" : `
-          <div class="app-approval-inline-actions">
-            <button data-id="${approval.id}" data-decision="approve" type="button">批准</button>
-            <button data-id="${approval.id}" data-decision="deny" type="button">拒绝</button>
-          </div>
-        `}
+        ${approval.policy_decision === "deny" ? `<div class="app-approval-inline-text">policy deny${approval.decision === "force_approve" ? " · override executed" : ""}</div>` : ""}
       `;
-      item.querySelectorAll("button[data-decision]").forEach((button) => {
-        button.addEventListener("click", async (event) => {
-          const current = event.currentTarget;
-          item.querySelectorAll("button[data-decision]").forEach((action) => {
-            action.disabled = true;
-          });
-          try {
-            await request(`/api/approvals/${current.dataset.id}/resolve`, {
-              method: "POST",
-              body: JSON.stringify({ decision: current.dataset.decision, actor: "web" }),
-            });
-            scheduleRefresh({ detail: true });
-          } catch (error) {
-            item.querySelectorAll("button[data-decision]").forEach((action) => {
-              action.disabled = false;
-            });
-            current.textContent = `失败：${error.message}`;
-          }
-        });
-      });
       wrap.appendChild(item);
     });
     box.appendChild(wrap);
@@ -1024,60 +1150,275 @@ function renderAssets() {
   }
 }
 
-function renderAutomation() {
-  const list = document.getElementById("automation-run-list");
-  if (!list) return;
+function renderHistory() {
+  const list = document.getElementById("history-session-list");
+  const total = document.getElementById("history-session-total");
+  const search = document.getElementById("history-search");
+  const onlyPending = document.getElementById("history-only-pending");
+  const onlyForce = document.getElementById("history-only-force");
+  if (!list || !total || !search || !onlyPending || !onlyForce) return;
 
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  const todayRuns = state.runs.filter((run) => new Date(run.created_at) >= startOfToday);
-  const successRuns = todayRuns.filter((run) => run.status === "completed");
-  const runningRuns = state.runs.filter((run) => ["created", "running_agent", "tool_running", "waiting_approval"].includes(run.status));
-  const interventionRuns = state.runs.filter((run) => run.status === "failed" || run.status === "denied" || run.pending_approvals > 0);
-  const base = todayRuns.length || state.runs.length || 1;
+  const query = String(search.value || "").trim().toLowerCase();
+  const items = state.sessions.filter((session) => {
+    const relatedRuns = state.runs.filter((run) => run.session_id === session.id);
+    const hasPending = relatedRuns.some((run) => run.pending_approvals > 0);
+    const hasForce = relatedRuns.some((run) => run.has_force_approve);
+    if (onlyPending.checked && !hasPending) return false;
+    if (onlyForce.checked && !hasForce) return false;
+    if (!query) return true;
+    return [session.title, session.preview, session.host_display_name, session.id].some((value) => String(value || "").toLowerCase().includes(query));
+  });
 
-  document.getElementById("automation-success-rate").textContent = `${Math.round((successRuns.length / base) * 100)}%`;
-  document.getElementById("automation-success-meta").textContent = `/ ${todayRuns.length || state.runs.length} 次`;
-  document.getElementById("automation-running-count").textContent = String(runningRuns.length);
-  document.getElementById("automation-failed-count").textContent = String(interventionRuns.length);
-  document.getElementById("automation-run-total").textContent = `${state.runs.length} 条真实执行`;
+  if (!search.dataset.bound) {
+    search.dataset.bound = "true";
+    search.addEventListener("input", renderHistory);
+    onlyPending.addEventListener("change", renderHistory);
+    onlyForce.addEventListener("change", renderHistory);
+  }
 
+  total.textContent = `${items.length} 条`;
   list.innerHTML = "";
-  if (state.runs.length === 0) {
-    list.innerHTML = `<div class="app-empty-state automation-empty-state">当前还没有真实执行记录。</div>`;
+  if (items.length === 0) {
+    list.innerHTML = `<div class="app-empty-state automation-empty-state">没有匹配的历史记录。</div>`;
     return;
   }
 
-  for (const run of state.runs.slice(0, 20)) {
-    const statusMeta = runStatusMeta(run.status);
-    const item = document.createElement("div");
-    item.className = `px-6 py-5 hover:bg-surface-container-low transition-colors group cursor-pointer ${statusMeta.tint}`;
-    item.innerHTML = `
-      <div class="flex items-center justify-between mb-2">
-        <div class="flex items-center gap-3">
-          <span class="material-symbols-outlined ${statusMeta.color}">${statusMeta.icon}</span>
-          <span class="font-h2 text-on-surface text-base font-semibold">${escapeHTML(run.id)}</span>
-          <span class="font-label text-on-surface-variant bg-[#E6E4D9] px-2 py-0.5 rounded text-[11px]">${escapeHTML(run.session_title || run.session_id || run.host_id)}</span>
-          ${run.pending_approvals > 0 ? `<span class="font-label text-[#C96442] bg-[#F5E7E0] px-2 py-0.5 rounded text-[11px]">待审批 ${run.pending_approvals}</span>` : ""}
+  items.forEach((session) => {
+    const relatedRuns = state.runs.filter((run) => run.session_id === session.id);
+    const node = document.createElement("div");
+    node.className = "px-6 py-5 hover:bg-surface-container-low transition-colors cursor-pointer";
+    node.innerHTML = `
+      <div class="flex items-center justify-between gap-4">
+        <div class="flex-1 min-w-0">
+          <div class="flex flex-wrap items-center gap-2 mb-2">
+            <span class="font-h2 text-on-surface text-base font-semibold">${escapeHTML(sessionTitle(session))}</span>
+            ${session.pending_approvals > 0 ? `<span class="font-label text-[#C96442] bg-[#F5E7E0] px-2 py-0.5 rounded text-[11px]">待审批 ${session.pending_approvals}</span>` : ""}
+            ${relatedRuns.some((run) => run.has_force_approve) ? `<span class="font-label text-[#9A4021] bg-[#FFF1EC] px-2 py-0.5 rounded text-[11px]">Force approve</span>` : ""}
+          </div>
+          <div class="font-body-sm text-[13px] text-on-surface-variant">${escapeHTML(truncateText(sessionPreviewText(session), 220))}</div>
+          <div class="mt-3 flex flex-wrap items-center gap-4 text-secondary">
+            <span class="font-body-sm text-[13px]">${escapeHTML(session.host_display_name || session.host_id || "未绑定主机")}</span>
+            <span class="font-body-sm text-[13px]">runs ${relatedRuns.length}</span>
+            <span class="font-body-sm text-[13px]">${formatTime(session.last_event_at || session.updated_at)}</span>
+          </div>
         </div>
-        <span class="font-body-sm text-secondary text-[13px]">${formatTime(run.last_event_at || run.updated_at)}</span>
-      </div>
-      <div class="flex flex-col gap-2 ml-9">
-        <div class="flex flex-wrap items-center gap-4 text-secondary">
-          <div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-[16px]">dns</span><span class="font-body-sm text-[13px]">${escapeHTML(run.host_display_name || run.host_id)}</span></div>
-          <div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-[16px]">schedule</span><span class="font-body-sm text-[13px]">${escapeHTML(run.status)}</span></div>
-          <div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-[16px]">history</span><span class="font-body-sm text-[13px]">${escapeHTML(run.last_event_type || "run.updated")}</span></div>
-        </div>
-        <div class="font-body-sm text-[13px] ${statusMeta.color} font-medium">${escapeHTML(truncateText(run.latest_assistant || run.session_preview || "处理中", 180))}</div>
       </div>
     `;
-    item.addEventListener("click", () => {
+    node.addEventListener("click", () => {
       const url = new URL(window.location.origin + "/");
-      if (run.session_id) url.searchParams.set("session", run.session_id);
+      url.searchParams.set("session", session.id);
       window.location.href = url.toString();
     });
-    list.appendChild(item);
+    list.appendChild(node);
+  });
+}
+
+function renderAutomation() {
+  const ruleList = document.getElementById("automation-rule-list");
+  const ruleTotal = document.getElementById("automation-rule-total");
+  const enabledCount = document.getElementById("automation-enabled-count");
+  const triggeredCount = document.getElementById("automation-triggered-count");
+  const alertCount = document.getElementById("automation-alert-count");
+  const form = document.getElementById("automation-form");
+  const message = document.getElementById("automation-form-message");
+  const openButton = document.getElementById("automation-new-rule");
+  if (!ruleList || !ruleTotal || !enabledCount || !triggeredCount || !alertCount || !form || !message || !openButton) return;
+
+  const rules = state.automations || [];
+  enabledCount.textContent = String(rules.filter((item) => item.enabled).length);
+  triggeredCount.textContent = String(rules.filter((item) => item.last_triggered_at).length);
+  alertCount.textContent = String(rules.filter((item) => item.last_status && !["healthy", "cooldown", "created"].includes(item.last_status)).length);
+  ruleTotal.textContent = `${rules.length} 条`;
+
+  ruleList.innerHTML = "";
+  if (rules.length === 0) {
+    ruleList.innerHTML = `<div class="app-empty-state automation-empty-state">当前还没有自动化规则。</div>`;
   }
+
+  rules.forEach((rule) => {
+    const node = document.createElement("div");
+    node.className = "px-6 py-5 hover:bg-surface-container-low transition-colors";
+    node.innerHTML = `
+      <div class="flex flex-col gap-4">
+        <div class="flex-1 min-w-0">
+          <div class="flex flex-wrap items-center gap-2 mb-2">
+            <span class="font-h2 text-on-surface text-base font-semibold">${escapeHTML(rule.name)}</span>
+            <span class="font-label ${rule.enabled ? "text-[#00796B] bg-[#E3F1ED]" : "text-secondary bg-[#E6E4D9]"} px-2 py-0.5 rounded text-[11px]">${rule.enabled ? "启用" : "停用"}</span>
+            <span class="font-label ${automationStatusClass(rule.last_status)} px-2 py-0.5 rounded text-[11px]">${escapeHTML(automationStatusLabel(rule.last_status))}</span>
+            ${rule.bypass_approvals ? `<span class="font-label text-[#9A4021] bg-[#FFF1EC] px-2 py-0.5 rounded text-[11px]">Bypass</span>` : ""}
+            ${rule.allow_force_approve ? `<span class="font-label text-[#9A4021] bg-[#FFF1EC] px-2 py-0.5 rounded text-[11px]">Allow force approve</span>` : ""}
+          </div>
+          <div class="font-body-sm text-[13px] text-on-surface-variant">${escapeHTML(rule.host_display_name || rule.host_id)} · ${escapeHTML(rule.metric)} ${escapeHTML(rule.operator)} ${escapeHTML(rule.threshold)}</div>
+          <div class="mt-3 flex flex-wrap items-center gap-4 text-secondary">
+            <span class="font-body-sm text-[13px]">窗口 ${rule.window_minutes} 分钟</span>
+            <span class="font-body-sm text-[13px]">冷却 ${rule.cooldown_minutes} 分钟</span>
+            <span class="font-body-sm text-[13px]">最近观测 ${Number(rule.last_observed_value || 0).toFixed(2)}</span>
+            <span class="font-body-sm text-[13px]">最近触发 ${formatTime(rule.last_triggered_at) || "无"}</span>
+          </div>
+        </div>
+        <div class="automation-rule-actions flex flex-wrap gap-2" data-rule-id="${escapeHTML(rule.id)}">
+          <button class="app-button-secondary" type="button" data-action="edit"><span class="material-symbols-outlined">edit</span><span>编辑</span></button>
+          <button class="app-button-secondary" type="button" data-action="sample"><span class="material-symbols-outlined">monitoring</span><span>采样验证</span></button>
+          <button class="app-primary-button app-primary-button--inline" type="button" data-action="test"><span class="material-symbols-outlined">play_arrow</span><span>测试运行</span></button>
+          <button class="app-button-secondary" type="button" data-action="force-test"><span class="material-symbols-outlined">bolt</span><span>强制测试</span></button>
+          ${rule.last_run_id ? `<button class="app-button-secondary" type="button" data-action="open-run"><span class="material-symbols-outlined">open_in_new</span><span>查看 run</span></button>` : ""}
+          <button class="app-button-secondary app-button-secondary--danger" type="button" data-action="delete"><span class="material-symbols-outlined">delete</span><span>删除</span></button>
+        </div>
+      </div>
+    `;
+    node.querySelector(".automation-rule-actions")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const button = event.target.closest("button[data-action]");
+      if (!button) return;
+      handleAutomationAction(button.dataset.action, rule, message, form);
+    });
+    node.addEventListener("click", () => {
+      populateAutomationForm(rule);
+      message.textContent = `正在编辑：${rule.name}`;
+      form.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    ruleList.appendChild(node);
+  });
+
+  renderAutomationForm();
+
+  if (!openButton.dataset.bound) {
+    openButton.dataset.bound = "true";
+    openButton.addEventListener("click", () => {
+      populateAutomationForm(null);
+      form.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+}
+
+function populateAutomationForm(rule) {
+  const form = document.getElementById("automation-form");
+  if (!form) return;
+  form.dataset.editingId = rule?.id || "";
+  document.getElementById("automation-rule-id").value = rule?.id || "";
+  document.getElementById("automation-name").value = rule?.name || "";
+  document.getElementById("automation-host").value = rule?.host_id || state.hosts[0]?.id || "";
+  document.getElementById("automation-metric").value = rule?.metric || "cpu_usage";
+  document.getElementById("automation-operator").value = rule?.operator || ">";
+  document.getElementById("automation-threshold").value = rule?.threshold ?? 80;
+  document.getElementById("automation-window").value = rule?.window_minutes ?? 5;
+  document.getElementById("automation-cooldown").value = rule?.cooldown_minutes ?? 15;
+  document.getElementById("automation-prompt").value = rule?.prompt_template || "";
+  document.getElementById("automation-enabled").checked = rule?.enabled ?? true;
+  document.getElementById("automation-bypass").checked = Boolean(rule?.bypass_approvals);
+  document.getElementById("automation-force-approve").checked = Boolean(rule?.allow_force_approve);
+  document.getElementById("automation-form-title").textContent = rule ? "编辑规则" : "新增规则";
+  document.getElementById("automation-form-subtitle").textContent = rule ? "更新后将继续沿用当前规则 ID 与最近触发上下文。" : "配置主机、指标阈值、冷却时间和触发提示词。";
+}
+
+async function handleAutomationAction(action, rule, message, form) {
+  try {
+    if (action === "edit") {
+      populateAutomationForm(rule);
+      message.textContent = `正在编辑：${rule.name}`;
+      form.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    if (action === "open-run") {
+      if (rule.session_id) {
+        window.location.href = `/?session=${encodeURIComponent(rule.session_id)}`;
+      } else if (rule.last_run_id) {
+        message.textContent = `最近 run：${rule.last_run_id}`;
+      }
+      return;
+    }
+    if (action === "delete") {
+      if (!window.confirm(`确认删除自动化规则「${rule.name}」？历史 run 不会删除。`)) return;
+      message.textContent = "正在删除规则...";
+      await request(`/api/automations/${encodeURIComponent(rule.id)}`, { method: "DELETE" });
+      await loadCore();
+      populateAutomationForm(null);
+      message.textContent = "规则已删除。";
+      renderAutomation();
+      return;
+    }
+    if (action === "sample") {
+      message.textContent = "正在进行真实指标采样...";
+      const sample = await request(`/api/automations/${encodeURIComponent(rule.id)}/sample`, { method: "POST" });
+      await loadCore();
+      message.textContent = `采样完成：${sample.metric} = ${Number(sample.value).toFixed(2)} (${formatTime(sample.captured_at)})`;
+      renderAutomation();
+      return;
+    }
+    if (action === "test" || action === "force-test") {
+      const force = action === "force-test";
+      message.textContent = force ? "正在强制创建测试 run..." : "正在按阈值创建测试 run...";
+      const result = await request(`/api/automations/${encodeURIComponent(rule.id)}/test`, {
+        method: "POST",
+        body: JSON.stringify({ force }),
+      });
+      await loadCore();
+      const observed = Number(result.sample?.value || 0).toFixed(2);
+      const runText = result.run_created && result.run?.id ? `已创建 run ${result.run.id}` : "未创建 run";
+      message.textContent = `${result.message || "测试完成"} 当前值 ${observed}，${runText}。`;
+      renderAutomation();
+    }
+  } catch (error) {
+    message.textContent = `操作失败：${error.message}`;
+  }
+}
+
+function renderAutomationForm() {
+  const form = document.getElementById("automation-form");
+  const hostSelect = document.getElementById("automation-host");
+  const message = document.getElementById("automation-form-message");
+  if (!form || !hostSelect || !message) return;
+
+  hostSelect.innerHTML = state.hosts.map((host) => `<option value="${escapeHTML(host.id)}">${escapeHTML(host.display_name || host.id)}</option>`).join("");
+  if (!form.dataset.initialized) {
+    populateAutomationForm(null);
+  }
+
+  if (!form.dataset.bound) {
+    form.dataset.bound = "true";
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        message.textContent = "正在保存自动化规则...";
+        const payload = {
+          id: document.getElementById("automation-rule-id").value.trim(),
+          name: document.getElementById("automation-name").value.trim(),
+          host_id: document.getElementById("automation-host").value,
+          trigger_type: "threshold",
+          metric: document.getElementById("automation-metric").value,
+          operator: document.getElementById("automation-operator").value,
+          threshold: Number(document.getElementById("automation-threshold").value || 0),
+          window_minutes: Number(document.getElementById("automation-window").value || 0),
+          cooldown_minutes: Number(document.getElementById("automation-cooldown").value || 0),
+          prompt_template: document.getElementById("automation-prompt").value.trim(),
+          session_strategy: "reuse",
+          enabled: document.getElementById("automation-enabled").checked,
+          bypass_approvals: document.getElementById("automation-bypass").checked,
+          allow_force_approve: document.getElementById("automation-force-approve").checked,
+        };
+        const endpoint = payload.id ? `/api/automations/${encodeURIComponent(payload.id)}` : "/api/automations";
+        await request(endpoint, {
+          method: payload.id ? "PUT" : "POST",
+          body: JSON.stringify(payload),
+        });
+        await loadCore();
+        populateAutomationForm(null);
+        form.dataset.initialized = "true";
+        message.textContent = "自动化规则已保存。";
+        renderAutomation();
+      } catch (error) {
+        message.textContent = `保存失败：${error.message}`;
+      }
+    });
+    form.addEventListener("reset", () => {
+      window.setTimeout(() => {
+        populateAutomationForm(null);
+        message.textContent = "表单已重置。";
+      }, 0);
+    });
+  }
+
+  form.dataset.initialized = "true";
 }
 
 function renderSettings() {
@@ -1145,6 +1486,7 @@ function renderSettings() {
   const presetAPIKeyInput = document.getElementById("settings-preset-api-key-input");
   const presetActiveInput = document.getElementById("settings-preset-active-input");
   const maxAgentStepsInput = document.getElementById("settings-max-agent-steps-input");
+  const bypassApprovalsInput = document.getElementById("settings-bypass-approvals-input");
   const contextSoftLimitInput = document.getElementById("settings-context-soft-limit-input");
   const compressionTriggerInput = document.getElementById("settings-compression-trigger-input");
   const responseReserveInput = document.getElementById("settings-response-reserve-input");
@@ -1157,7 +1499,7 @@ function renderSettings() {
   const activateButton = document.getElementById("settings-activate-preset");
   const deleteButton = document.getElementById("settings-delete-preset");
   const addButton = document.getElementById("settings-add-preset");
-  if (!presetIDInput || !presetNameInput || !presetModelInput || !presetBaseURLInput || !presetAPIKeyInput || !presetActiveInput || !maxAgentStepsInput || !contextSoftLimitInput || !compressionTriggerInput || !responseReserveInput || !recentFullTurnsInput || !olderUserLedgerInput || !hostProfileTTLInput || !toolResultMaxCharsInput || !toolResultHeadCharsInput || !toolResultTailCharsInput || !activateButton || !deleteButton || !addButton) {
+  if (!presetIDInput || !presetNameInput || !presetModelInput || !presetBaseURLInput || !presetAPIKeyInput || !presetActiveInput || !maxAgentStepsInput || !bypassApprovalsInput || !contextSoftLimitInput || !compressionTriggerInput || !responseReserveInput || !recentFullTurnsInput || !olderUserLedgerInput || !hostProfileTTLInput || !toolResultMaxCharsInput || !toolResultHeadCharsInput || !toolResultTailCharsInput || !activateButton || !deleteButton || !addButton) {
     return;
   }
 
@@ -1170,6 +1512,7 @@ function renderSettings() {
   presetAPIKeyInput.value = effectivePreset.api_key || "";
   presetActiveInput.checked = effectivePreset.id ? effectivePreset.id === currentGatewayPresetId() : true;
   maxAgentStepsInput.value = currentRuntime.max_agent_steps;
+  bypassApprovalsInput.checked = Boolean(currentRuntime.bypass_approvals);
   contextSoftLimitInput.value = currentRuntime.context_soft_limit_tokens;
   compressionTriggerInput.value = currentRuntime.compression_trigger_tokens;
   responseReserveInput.value = currentRuntime.response_reserve_tokens;
@@ -1200,6 +1543,7 @@ function renderSettings() {
         };
         next.runtime_settings = {
           max_agent_steps: Number(maxAgentStepsInput.value || 0),
+          bypass_approvals: bypassApprovalsInput.checked,
           context_soft_limit_tokens: Number(contextSoftLimitInput.value || 0),
           compression_trigger_tokens: Number(compressionTriggerInput.value || 0),
           response_reserve_tokens: Number(responseReserveInput.value || 0),
@@ -1293,6 +1637,7 @@ function renderSettings() {
       presetActiveInput.checked = true;
       const defaults = runtimeSettingsWithDefaults();
       maxAgentStepsInput.value = defaults.max_agent_steps;
+      bypassApprovalsInput.checked = defaults.bypass_approvals;
       contextSoftLimitInput.value = defaults.context_soft_limit_tokens;
       compressionTriggerInput.value = defaults.compression_trigger_tokens;
       responseReserveInput.value = defaults.response_reserve_tokens;
@@ -1378,6 +1723,10 @@ function eventTitle(event) {
       return "等待审批";
     case "run.approval_resolved":
       return "审批已处理";
+    case "run.policy_override_requested":
+      return "需要 Force approve";
+    case "run.policy_override_resolved":
+      return "Force approve 已处理";
     case "run.completed":
       return "执行完成";
     case "run.failed":
@@ -1403,6 +1752,10 @@ function eventIcon(type) {
       return "warning";
     case "run.approval_resolved":
       return "fact_check";
+    case "run.policy_override_requested":
+      return "shield";
+    case "run.policy_override_resolved":
+      return "gpp_maybe";
     case "run.completed":
       return "task_alt";
     case "run.failed":
@@ -1414,6 +1767,9 @@ function eventIcon(type) {
 
 function approvalDecisionMeta(decision) {
   if (!decision) return { label: "待处理", className: "bg-[#F5E7E0] text-[#C96442]" };
+  if (String(decision).toLowerCase() === "force_approve") {
+    return { label: "Force approved", className: "bg-[#FFF1EC] text-[#9A4021]" };
+  }
   if (["approve", "approved", "allow"].includes(String(decision).toLowerCase())) {
     return { label: "已批准", className: "bg-[#E3F1ED] text-[#00796B]" };
   }
@@ -1447,6 +1803,7 @@ async function initChatPage() {
   const chatForm = document.getElementById("chat-form");
   const input = document.getElementById("chat-input");
   const hostSelect = document.getElementById("chat-host-select");
+  const bypassToggle = document.getElementById("chat-bypass-toggle");
   const note = document.getElementById("chat-composer-note");
 
   newSessionButton?.addEventListener("click", () => {
@@ -1459,6 +1816,21 @@ async function initChatPage() {
     renderChat();
     input?.focus();
   });
+
+  if (bypassToggle && !bypassToggle.dataset.bound) {
+    bypassToggle.dataset.bound = "true";
+    bypassToggle.addEventListener("change", async (event) => {
+      try {
+        await syncComposerBypass(event.currentTarget.checked);
+        if (note) note.textContent = state.currentSessionId
+          ? "当前会话后续 runs 已更新 bypass 模式。"
+          : "新会话将使用当前 bypass 模式。";
+      } catch (error) {
+        event.currentTarget.checked = !event.currentTarget.checked;
+        if (note) note.textContent = `切换 bypass 失败：${error.message}`;
+      }
+    });
+  }
 
   if (hostSelect && !hostSelect.dataset.bound) {
     hostSelect.dataset.bound = "true";
@@ -1499,6 +1871,7 @@ async function initChatPage() {
             session_id: state.currentSessionId || "",
             user_input: text,
             requested_by: "web",
+            bypass_approvals: bypassToggle ? bypassToggle.checked : composerBypassEnabled(),
           }),
         });
         if (input) {

@@ -24,6 +24,7 @@ func NewJSONStore(root string) (*JSONStore, error) {
 		filepath.Join(root, "turns"),
 		filepath.Join(root, "runs"),
 		filepath.Join(root, "approvals"),
+		filepath.Join(root, "automations"),
 		filepath.Join(root, "events"),
 	}
 	for _, path := range paths {
@@ -102,6 +103,19 @@ func (s *JSONStore) GetApproval(id string) (models.Approval, bool, error) {
 }
 func (s *JSONStore) SaveApproval(approval models.Approval) error {
 	return saveObject(s, "approvals", approval.ID, approval)
+}
+
+func (s *JSONStore) ListAutomations() ([]models.AutomationRule, error) {
+	return listObjects[models.AutomationRule](s, "automations")
+}
+func (s *JSONStore) GetAutomation(id string) (models.AutomationRule, bool, error) {
+	return getObject[models.AutomationRule](s, "automations", id)
+}
+func (s *JSONStore) SaveAutomation(rule models.AutomationRule) error {
+	return saveObject(s, "automations", rule.ID, rule)
+}
+func (s *JSONStore) DeleteAutomation(id string) error {
+	return deleteObject(s, "automations", id)
 }
 
 func (s *JSONStore) AppendEvent(event models.Event) error {
@@ -225,4 +239,15 @@ func saveObject(s *JSONStore, dir, id string, value any) error {
 		return fmt.Errorf("marshal %s/%s: %w", dir, id, err)
 	}
 	return os.WriteFile(path, bytes, 0o644)
+}
+
+func deleteObject(s *JSONStore, dir, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := filepath.Join(s.root, dir, id+".json")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete %s/%s: %w", dir, id, err)
+	}
+	return nil
 }

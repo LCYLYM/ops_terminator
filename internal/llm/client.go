@@ -24,13 +24,14 @@ type Client struct {
 }
 
 type chatCompletionRequest struct {
-	Model       string                  `json:"model"`
-	Messages    []models.ChatMessage    `json:"messages"`
-	Tools       []models.ToolDefinition `json:"tools,omitempty"`
-	ToolChoice  string                  `json:"tool_choice,omitempty"`
-	Stream      bool                    `json:"stream"`
-	MaxTokens   int                     `json:"max_tokens,omitempty"`
-	Temperature float64                 `json:"temperature,omitempty"`
+	Model             string                  `json:"model"`
+	Messages          []models.ChatMessage    `json:"messages"`
+	Tools             []models.ToolDefinition `json:"tools,omitempty"`
+	ToolChoice        string                  `json:"tool_choice,omitempty"`
+	ParallelToolCalls bool                    `json:"parallel_tool_calls"`
+	Stream            bool                    `json:"stream"`
+	MaxTokens         int                     `json:"max_tokens,omitempty"`
+	Temperature       float64                 `json:"temperature,omitempty"`
 }
 
 type streamChunk struct {
@@ -105,12 +106,13 @@ func (c *Client) SnapshotConfig() (baseURL, apiKey, model string) {
 func (c *Client) StreamChatCompletion(ctx context.Context, messages []models.ChatMessage, tools []models.ToolDefinition, onText func(string)) (*models.AssistantResponse, error) {
 	baseURL, apiKey, model := c.SnapshotConfig()
 	requestBody := chatCompletionRequest{
-		Model:       model,
-		Messages:    messages,
-		Tools:       tools,
-		Stream:      true,
-		MaxTokens:   4096,
-		Temperature: 0.2,
+		Model:             model,
+		Messages:          messages,
+		Tools:             tools,
+		ParallelToolCalls: false,
+		Stream:            true,
+		MaxTokens:         4096,
+		Temperature:       0.2,
 	}
 	if len(tools) > 0 {
 		requestBody.ToolChoice = "auto"

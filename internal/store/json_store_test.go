@@ -82,3 +82,38 @@ func TestJSONStoreGatewayConfigRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected max agent steps: %+v", got.RuntimeSettings)
 	}
 }
+
+func TestJSONStoreAutomationRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewJSONStore(root)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	rule := models.AutomationRule{
+		ID:          "automation-1",
+		Name:        "cpu high",
+		Enabled:     true,
+		HostID:      "local",
+		TriggerType: models.TriggerTypeThreshold,
+		Metric:      "cpu_usage",
+		Operator:    ">",
+		Threshold:   80,
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+	}
+	if err := store.SaveAutomation(rule); err != nil {
+		t.Fatalf("save automation: %v", err)
+	}
+
+	got, found, err := store.GetAutomation(rule.ID)
+	if err != nil {
+		t.Fatalf("get automation: %v", err)
+	}
+	if !found {
+		t.Fatal("expected automation rule to exist")
+	}
+	if got.Name != rule.Name || got.Metric != rule.Metric {
+		t.Fatalf("unexpected automation rule: %+v", got)
+	}
+}

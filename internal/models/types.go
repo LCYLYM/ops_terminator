@@ -8,6 +8,21 @@ const (
 )
 
 const (
+	ApprovalDecisionApprove      = "approve"
+	ApprovalDecisionReject       = "reject"
+	ApprovalDecisionForceApprove = "force_approve"
+)
+
+const (
+	DecisionSourceUser   = "user"
+	DecisionSourceBypass = "bypass"
+)
+
+const (
+	TriggerTypeThreshold = "threshold"
+)
+
+const (
 	RunStatusCreated         = "created"
 	RunStatusRunningAgent    = "running_agent"
 	RunStatusWaitingApproval = "waiting_approval"
@@ -42,6 +57,7 @@ type Session struct {
 	HostID      string      `json:"host_id"`
 	Title       string      `json:"title"`
 	Summary     string      `json:"summary,omitempty"`
+	Mode        SessionMode `json:"mode,omitempty"`
 	Memory      MemoryState `json:"memory,omitempty"`
 	TurnIDs     []string    `json:"turn_ids,omitempty"`
 	RunIDs      []string    `json:"run_ids,omitempty"`
@@ -52,16 +68,21 @@ type Session struct {
 }
 
 type RuntimeSettings struct {
-	MaxAgentSteps            int `json:"max_agent_steps"`
-	ContextSoftLimitTokens   int `json:"context_soft_limit_tokens"`
-	CompressionTriggerTokens int `json:"compression_trigger_tokens"`
-	ResponseReserveTokens    int `json:"response_reserve_tokens"`
-	RecentFullTurns          int `json:"recent_full_turns"`
-	OlderUserLedgerEntries   int `json:"older_user_ledger_entries"`
-	HostProfileTTLMinutes    int `json:"host_profile_ttl_minutes"`
-	ToolResultMaxChars       int `json:"tool_result_max_chars"`
-	ToolResultHeadChars      int `json:"tool_result_head_chars"`
-	ToolResultTailChars      int `json:"tool_result_tail_chars"`
+	MaxAgentSteps            int  `json:"max_agent_steps"`
+	BypassApprovals          bool `json:"bypass_approvals"`
+	ContextSoftLimitTokens   int  `json:"context_soft_limit_tokens"`
+	CompressionTriggerTokens int  `json:"compression_trigger_tokens"`
+	ResponseReserveTokens    int  `json:"response_reserve_tokens"`
+	RecentFullTurns          int  `json:"recent_full_turns"`
+	OlderUserLedgerEntries   int  `json:"older_user_ledger_entries"`
+	HostProfileTTLMinutes    int  `json:"host_profile_ttl_minutes"`
+	ToolResultMaxChars       int  `json:"tool_result_max_chars"`
+	ToolResultHeadChars      int  `json:"tool_result_head_chars"`
+	ToolResultTailChars      int  `json:"tool_result_tail_chars"`
+}
+
+type SessionMode struct {
+	BypassApprovals bool `json:"bypass_approvals"`
 }
 
 type HostProfile struct {
@@ -94,9 +115,11 @@ type MemoryState struct {
 type ToolExecutionRecord struct {
 	ToolName       string `json:"tool_name"`
 	ToolCallID     string `json:"tool_call_id,omitempty"`
+	ApprovalID     string `json:"approval_id,omitempty"`
 	CommandPreview string `json:"command_preview,omitempty"`
 	RawResult      string `json:"raw_result,omitempty"`
 	ModelResult    string `json:"model_result,omitempty"`
+	PolicyOverride bool   `json:"policy_override,omitempty"`
 	Truncated      bool   `json:"truncated,omitempty"`
 	RawChars       int    `json:"raw_chars,omitempty"`
 	ModelChars     int    `json:"model_chars,omitempty"`
@@ -128,30 +151,40 @@ type Turn struct {
 }
 
 type Run struct {
-	ID              string       `json:"id"`
-	SessionID       string       `json:"session_id"`
-	TurnID          string       `json:"turn_id"`
-	HostID          string       `json:"host_id"`
-	Status          string       `json:"status"`
-	PendingApproval string       `json:"pending_approval,omitempty"`
-	ToolHistory     []string     `json:"tool_history,omitempty"`
-	PolicyHistory   []PolicyRule `json:"policy_history,omitempty"`
-	FinalResponse   string       `json:"final_response,omitempty"`
-	FailureMessage  string       `json:"failure_message,omitempty"`
-	CreatedAt       time.Time    `json:"created_at"`
-	UpdatedAt       time.Time    `json:"updated_at"`
-	CompletedAt     *time.Time   `json:"completed_at,omitempty"`
+	ID                   string       `json:"id"`
+	SessionID            string       `json:"session_id"`
+	TurnID               string       `json:"turn_id"`
+	HostID               string       `json:"host_id"`
+	Status               string       `json:"status"`
+	RequestedBy          string       `json:"requested_by,omitempty"`
+	Mode                 SessionMode  `json:"mode,omitempty"`
+	PendingApproval      string       `json:"pending_approval,omitempty"`
+	PendingBatchID       string       `json:"pending_batch_id,omitempty"`
+	PendingBatchTotal    int          `json:"pending_batch_total,omitempty"`
+	PendingBatchResolved int          `json:"pending_batch_resolved,omitempty"`
+	ToolHistory          []string     `json:"tool_history,omitempty"`
+	PolicyHistory        []PolicyRule `json:"policy_history,omitempty"`
+	FinalResponse        string       `json:"final_response,omitempty"`
+	FailureMessage       string       `json:"failure_message,omitempty"`
+	CreatedAt            time.Time    `json:"created_at"`
+	UpdatedAt            time.Time    `json:"updated_at"`
+	CompletedAt          *time.Time   `json:"completed_at,omitempty"`
 }
 
 type Approval struct {
 	ID               string     `json:"id"`
 	RunID            string     `json:"run_id"`
+	BatchID          string     `json:"batch_id,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	BatchIndex       int        `json:"batch_index,omitempty"`
 	ToolName         string     `json:"tool_name"`
 	Reason           string     `json:"reason"`
 	Scope            string     `json:"scope"`
 	SaferAlternative string     `json:"safer_alternative,omitempty"`
 	RequestedBy      string     `json:"requested_by"`
+	PolicyDecision   string     `json:"policy_decision,omitempty"`
 	Decision         string     `json:"decision,omitempty"`
+	DecisionSource   string     `json:"decision_source,omitempty"`
 	ResolvedBy       string     `json:"resolved_by,omitempty"`
 	CreatedAt        time.Time  `json:"created_at"`
 	ResolvedAt       *time.Time `json:"resolved_at,omitempty"`
@@ -218,6 +251,7 @@ type RunView struct {
 	SessionPreview   string     `json:"session_preview,omitempty"`
 	HostDisplayName  string     `json:"host_display_name,omitempty"`
 	PendingApprovals int        `json:"pending_approvals"`
+	HasForceApprove  bool       `json:"has_force_approve,omitempty"`
 	LatestAssistant  string     `json:"latest_assistant,omitempty"`
 	LastEventAt      *time.Time `json:"last_event_at,omitempty"`
 	LastEventType    string     `json:"last_event_type,omitempty"`
@@ -230,6 +264,51 @@ type ApprovalView struct {
 	HostID          string `json:"host_id,omitempty"`
 	HostDisplayName string `json:"host_display_name,omitempty"`
 	RunStatus       string `json:"run_status,omitempty"`
+}
+
+type AutomationRule struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Enabled           bool       `json:"enabled"`
+	HostID            string     `json:"host_id"`
+	TriggerType       string     `json:"trigger_type"`
+	Metric            string     `json:"metric"`
+	Operator          string     `json:"operator"`
+	Threshold         float64    `json:"threshold"`
+	WindowMinutes     int        `json:"window_minutes"`
+	CooldownMinutes   int        `json:"cooldown_minutes"`
+	PromptTemplate    string     `json:"prompt_template"`
+	SessionStrategy   string     `json:"session_strategy"`
+	BypassApprovals   bool       `json:"bypass_approvals"`
+	AllowForceApprove bool       `json:"allow_force_approve"`
+	SessionID         string     `json:"session_id,omitempty"`
+	LastTriggeredAt   *time.Time `json:"last_triggered_at,omitempty"`
+	LastRunID         string     `json:"last_run_id,omitempty"`
+	LastStatus        string     `json:"last_status,omitempty"`
+	LastObservedValue float64    `json:"last_observed_value,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+type AutomationRuleView struct {
+	AutomationRule
+	HostDisplayName string `json:"host_display_name,omitempty"`
+}
+
+type AutomationSample struct {
+	Metric     string    `json:"metric"`
+	Value      float64   `json:"value"`
+	CapturedAt time.Time `json:"captured_at"`
+}
+
+type AutomationTestResult struct {
+	Rule             AutomationRule   `json:"rule"`
+	Sample           AutomationSample `json:"sample"`
+	ThresholdMatched bool             `json:"threshold_matched"`
+	CooldownBlocked  bool             `json:"cooldown_blocked"`
+	RunCreated       bool             `json:"run_created"`
+	Run              *Run             `json:"run,omitempty"`
+	Message          string           `json:"message"`
 }
 
 type AuditEntry struct {
@@ -351,12 +430,25 @@ type TurnHistoryItem struct {
 	WaitingApproval bool       `json:"waiting_approval,omitempty"`
 }
 
+type ApprovalBatch struct {
+	ID          string     `json:"id"`
+	RunID       string     `json:"run_id"`
+	Approvals   []Approval `json:"approvals"`
+	Total       int        `json:"total"`
+	Resolved    int        `json:"resolved"`
+	Waiting     bool       `json:"waiting"`
+	Executing   bool       `json:"executing"`
+	Completed   bool       `json:"completed"`
+	HasOverride bool       `json:"has_override"`
+}
+
 type SessionDetail struct {
 	Session          Session           `json:"session"`
 	Host             Host              `json:"host"`
 	Memory           MemoryState       `json:"memory,omitempty"`
 	Turns            []TurnHistoryItem `json:"turns"`
 	PendingApprovals []Approval        `json:"pending_approvals"`
+	PendingBatches   []ApprovalBatch   `json:"pending_batches,omitempty"`
 }
 
 type GatewayPreset struct {
@@ -404,6 +496,7 @@ type ExecutionResult struct {
 func DefaultRuntimeSettings() RuntimeSettings {
 	return RuntimeSettings{
 		MaxAgentSteps:            20,
+		BypassApprovals:          false,
 		ContextSoftLimitTokens:   20000,
 		CompressionTriggerTokens: 16000,
 		ResponseReserveTokens:    4000,

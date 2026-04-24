@@ -95,13 +95,22 @@ func buildPageRenderers(templateFS fs.FS) (map[string]pageRenderer, error) {
 			view: PageView{
 				PageKey:   "chat",
 				BodyClass: "app-page--chat",
-				Title:     "对话控制面",
-				Subtitle:  "真实会话、执行、审批与事件统一视图。",
+				Title:     "聊天工作台",
+				Subtitle:  "真实会话、批处理审批、执行与事件统一视图。",
 				SidebarAction: &ActionView{
 					ID:    "new-session-button",
 					Label: "新建会话",
 					Icon:  "add",
 				},
+			},
+		},
+		"/history": {
+			file: "history.html",
+			view: PageView{
+				PageKey:   "history",
+				BodyClass: "app-page--history",
+				Title:     "历史记录",
+				Subtitle:  "按会话、Run、审批状态浏览真实历史。",
 			},
 		},
 		"/assets": {
@@ -123,13 +132,12 @@ func buildPageRenderers(templateFS fs.FS) (map[string]pageRenderer, error) {
 			view: PageView{
 				PageKey:   "automation",
 				BodyClass: "app-page--automation",
-				Title:     "自动化执行记录",
-				Subtitle:  "基于真实 runs 的状态统计与执行回放。",
+				Title:     "自动化中心",
+				Subtitle:  "基于真实阈值触发持续创建并跟踪 AI 运维任务。",
 				PrimaryAction: &ActionView{
-					Href:   "/",
-					Label:  "新建执行",
-					Icon:   "play_arrow",
-					IsLink: true,
+					ID:    "automation-new-rule",
+					Label: "新增规则",
+					Icon:  "play_arrow",
 				},
 			},
 		},
@@ -164,7 +172,8 @@ func buildPageRenderers(templateFS fs.FS) (map[string]pageRenderer, error) {
 
 func buildNavItems(active string) []NavItem {
 	items := []NavItem{
-		{Href: "/", Label: "对话历史", Icon: "chat"},
+		{Href: "/", Label: "聊天工作台", Icon: "chat"},
+		{Href: "/history", Label: "历史记录", Icon: "history"},
 		{Href: "/assets", Label: "资产管理", Icon: "dns"},
 		{Href: "/automation", Label: "自动化中心", Icon: "bolt"},
 		{Href: "/settings", Label: "系统设置", Icon: "settings"},
@@ -173,6 +182,8 @@ func buildNavItems(active string) []NavItem {
 		switch items[i].Href {
 		case "/":
 			items[i].Active = active == "chat"
+		case "/history":
+			items[i].Active = active == "history"
 		case "/assets":
 			items[i].Active = active == "assets"
 		case "/automation":
