@@ -61,6 +61,8 @@ const state = {
   refreshTimer: null,
   refreshInFlight: null,
   refreshDetail: false,
+  chatApprovalExpandedOverride: null,
+  chatApprovalLastPendingCount: 0,
 };
 
 async function request(path, options = {}) {
@@ -119,6 +121,12 @@ function firstNonEmpty(...values) {
     if (typeof value === "string" && value.trim()) return value;
   }
   return "";
+}
+
+function compactApprovalBatchID(value) {
+  const text = String(value || "");
+  if (text.length <= 28) return text;
+  return `${text.slice(0, 18)}…${text.slice(-6)}`;
 }
 
 function truncateText(value, limit = 140) {
@@ -669,10 +677,52 @@ function renderChatApprovalBar() {
   const batches = state.currentSessionDetail?.pending_batches || [];
   box.innerHTML = "";
   if (batches.length === 0) {
-    box.classList.remove("has-content");
+    box.classList.remove("has-content", "is-expanded", "is-collapsed");
     return;
   }
+  const totalApprovals = batches.reduce((total, batch) => total + (batch.approvals || []).length, 0);
+  const totalPending = batches.reduce((total, batch) => total + (batch.approvals || []).filter((item) => !item.decision).length, 0);
+  const previousPending = state.chatApprovalLastPendingCount;
+  if (previousPending === 0 && totalPending > 0) {
+    state.chatApprovalExpandedOverride = null;
+  }
+  if (previousPending > 0 && totalPending === 0) {
+    state.chatApprovalExpandedOverride = false;
+  }
+  state.chatApprovalLastPendingCount = totalPending;
+  const expanded = state.chatApprovalExpandedOverride === null ? totalPending > 0 : Boolean(state.chatApprovalExpandedOverride);
   box.classList.add("has-content");
+  box.classList.toggle("is-expanded", expanded);
+  box.classList.toggle("is-collapsed", !expanded);
+
+  const summary = document.createElement("div");
+  summary.className = "app-chat-approval-summary-strip";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "app-chat-approval-toggle";
+  toggle.textContent = expanded ? "收起" : "展开";
+  toggle.addEventListener("click", () => {
+    state.chatApprovalExpandedOverride = !expanded;
+    renderChatApprovalBar();
+    scrollChatToBottom();
+  });
+  summary.innerHTML = `
+    <span>${totalPending > 0 ? "待审批" : "审批已完成"}</span>
+    <strong>${batches.length} 批 · ${totalPending > 0 ? `${totalPending} 待处理` : `${totalApprovals} 已处理`}</strong>
+  `;
+  summary.appendChild(toggle);
+  box.appendChild(summary);
+
+  if (!expanded) {
+    return;
+  }
+  if (totalPending === 0) {
+    const done = document.createElement("div");
+    done.className = "app-chat-approval-done-card";
+    done.textContent = "所有审批已经处理完成，执行状态会继续在对话流和 Live Trace 中更新。";
+    box.appendChild(done);
+    return;
+  }
   batches.forEach((batch) => {
     const node = document.createElement("div");
     node.className = "app-chat-approval-batch";
@@ -681,7 +731,7 @@ function renderChatApprovalBar() {
     node.innerHTML = `
       <div class="app-chat-approval-batch-head">
         <div>
-          <div class="app-chat-approval-batch-title">审批批次 ${escapeHTML(batch.id)}</div>
+          <div class="app-chat-approval-batch-title" title="审批批次 ${escapeHTML(batch.id)}">审批 ${escapeHTML(compactApprovalBatchID(batch.id))}</div>
           <div class="app-chat-approval-batch-meta">${batch.executing ? "执行中" : pendingCount > 0 ? `待处理 ${pendingCount} 项` : "已决议，等待执行"}</div>
         </div>
       </div>
@@ -711,12 +761,12 @@ function renderChatApprovalBar() {
         positive.type = "button";
         positive.dataset.id = approval.id;
         positive.dataset.decision = needsOverride ? "force_approve" : "approve";
-        positive.textContent = needsOverride ? "Force approve" : "Approve";
+        positive.textContent = needsOverride ? "强制批准" : "批准";
         const negative = document.createElement("button");
         negative.type = "button";
         negative.dataset.id = approval.id;
         negative.dataset.decision = "reject";
-        negative.textContent = "Reject";
+        negative.textContent = "拒绝";
         actions.appendChild(positive);
         actions.appendChild(negative);
         actions.querySelectorAll("button").forEach((button) => {
