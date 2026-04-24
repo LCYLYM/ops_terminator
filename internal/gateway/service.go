@@ -33,6 +33,11 @@ type Service struct {
 
 	settingsMu    sync.RWMutex
 	gatewayConfig models.GatewayConfig
+
+	dashboardCacheMu    sync.Mutex
+	dashboardCache      dashboardState
+	dashboardCacheUntil time.Time
+	dashboardCacheWait  chan struct{}
 }
 
 type ApprovalResolver interface {
@@ -519,7 +524,11 @@ func (s *Service) UpsertHost(host models.Host) (models.Host, error) {
 	if host.Mode == models.HostModeSSH && host.Port == 0 {
 		host.Port = 22
 	}
-	return host, s.store.SaveHost(host)
+	if err := s.store.SaveHost(host); err != nil {
+		return models.Host{}, err
+	}
+	s.invalidateDashboardCache()
+	return host, nil
 }
 
 func (s *Service) CreateRun(ctx context.Context, request RunRequest) (models.Run, error) {
@@ -578,6 +587,7 @@ func (s *Service) CreateRun(ctx context.Context, request RunRequest) (models.Run
 	if err := s.store.SaveRun(run); err != nil {
 		return models.Run{}, err
 	}
+	s.invalidateDashboardCache()
 	_ = s.RecordEvent(models.Event{
 		ID:        models.NewID("event"),
 		RunID:     run.ID,
@@ -630,6 +640,7 @@ func (s *Service) ResolveApproval(id, decision, actor string) (models.Run, error
 		Payload:   map[string]any{"approval_id": id, "actor": actor, "approved": approved, "decision_source": approval.DecisionSource},
 		Timestamp: time.Now().UTC(),
 	})
+	s.invalidateDashboardCache()
 	if approval.Decision == models.ApprovalDecisionForceApprove {
 		_ = s.store.AppendAudit(models.AuditEntry{
 			ID:        models.NewID("audit"),
@@ -726,6 +737,7 @@ func (s *Service) UpdateSessionMode(id string, mode models.SessionMode) (models.
 	if err := s.store.SaveSession(session); err != nil {
 		return models.Session{}, err
 	}
+	s.invalidateDashboardCache()
 	return session, nil
 }
 
@@ -761,6 +773,7 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 	run.Status = models.RunStatusRunningAgent
 	run.UpdatedAt = time.Now().UTC()
 	_ = s.store.SaveRun(run)
+	s.invalidateDashboardCache()
 
 	allTurns, err := s.store.ListTurns()
 	if err != nil {
@@ -798,6 +811,7 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 		run.CompletedAt = &now
 		run.UpdatedAt = now
 		_ = s.store.SaveRun(run)
+		s.invalidateDashboardCache()
 		_ = s.RecordEvent(models.Event{
 			ID:        models.NewID("event"),
 			RunID:     run.ID,
@@ -829,6 +843,7 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 	_ = s.store.SaveRun(run)
 	_ = s.store.SaveTurn(turn)
 	_ = s.store.SaveSession(session)
+	s.invalidateDashboardCache()
 	_ = s.store.AppendAudit(models.AuditEntry{
 		ID:        models.NewID("audit"),
 		RunID:     run.ID,
@@ -873,7 +888,11 @@ func (s *Service) ensureSession(host models.Host, sessionID, userInput string, d
 	if bypassOverride != nil {
 		session.Mode.BypassApprovals = *bypassOverride
 	}
-	return session, s.store.SaveSession(session)
+	if err := s.store.SaveSession(session); err != nil {
+		return models.Session{}, err
+	}
+	s.invalidateDashboardCache()
+	return session, nil
 }
 
 func normalizeHost(host models.Host) models.Host {
@@ -1036,6 +1055,39 @@ type dashboardState struct {
 }
 
 func (s *Service) loadDashboardState() (dashboardState, error) {
+	for {
+		s.dashboardCacheMu.Lock()
+		if !s.dashboardCacheUntil.IsZero() && time.Now().Before(s.dashboardCacheUntil) {
+			state := s.dashboardCache
+			s.dashboardCacheMu.Unlock()
+			return state, nil
+		}
+		if wait := s.dashboardCacheWait; wait != nil {
+			s.dashboardCacheMu.Unlock()
+			<-wait
+			continue
+		}
+		wait := make(chan struct{})
+		s.dashboardCacheWait = wait
+		s.dashboardCacheMu.Unlock()
+
+		state, err := s.loadDashboardStateFresh()
+
+		s.dashboardCacheMu.Lock()
+		if err == nil {
+			s.dashboardCache = state
+			s.dashboardCacheUntil = time.Now().Add(250 * time.Millisecond)
+		} else {
+			s.dashboardCacheUntil = time.Time{}
+		}
+		close(wait)
+		s.dashboardCacheWait = nil
+		s.dashboardCacheMu.Unlock()
+		return state, err
+	}
+}
+
+func (s *Service) loadDashboardStateFresh() (dashboardState, error) {
 	hosts, err := s.store.ListHosts()
 	if err != nil {
 		return dashboardState{}, err
@@ -1107,6 +1159,12 @@ func (s *Service) loadDashboardState() (dashboardState, error) {
 		state.pendingApprovalCountBySession[run.SessionID]++
 	}
 	return state, nil
+}
+
+func (s *Service) invalidateDashboardCache() {
+	s.dashboardCacheMu.Lock()
+	defer s.dashboardCacheMu.Unlock()
+	s.dashboardCacheUntil = time.Time{}
 }
 
 func buildCapabilityViews(state dashboardState) []models.CapabilityView {

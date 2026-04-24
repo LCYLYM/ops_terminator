@@ -353,7 +353,7 @@ function scheduleRefresh({ detail = false } = {}) {
     state.refreshDetail = false;
     state.refreshInFlight = (async () => {
       await loadCore();
-      if (needDetail && state.currentSessionId) {
+      if (needDetail && page === "chat" && state.currentSessionId) {
         await loadSessionDetail(state.currentSessionId);
       }
       renderPage();
@@ -372,8 +372,15 @@ function appendLiveEvent(event) {
   state.liveEvents.set(event.run_id, dedupeEvents(current).slice(-200));
 }
 
+function disconnectGlobalEvents() {
+  if (!state.eventSource) return;
+  state.eventSource.close();
+  state.eventSource = null;
+  state.streamConnected = false;
+}
+
 function connectGlobalEvents() {
-  if (state.eventSource) state.eventSource.close();
+  disconnectGlobalEvents();
   const source = new EventSource("/api/events/stream");
   state.eventSource = source;
 
@@ -395,7 +402,7 @@ function connectGlobalEvents() {
       state.currentSessionDetail?.turns?.some((item) => item.run.id === event.run_id),
     );
 
-    if (LIVE_RENDER_EVENT_TYPES.has(event.type) && (page !== "chat" || affectsCurrentSession)) {
+    if (page === "chat" && LIVE_RENDER_EVENT_TYPES.has(event.type) && affectsCurrentSession) {
       renderPage();
     }
 
@@ -408,6 +415,22 @@ function connectGlobalEvents() {
       scheduleRefresh({ detail: affectsCurrentSession });
     }
   };
+}
+
+function bindGlobalNavigationCleanup() {
+  if (document.body.dataset.navigationCleanupBound) return;
+  document.body.dataset.navigationCleanupBound = "true";
+
+  const cleanup = () => disconnectGlobalEvents();
+  window.addEventListener("pagehide", cleanup);
+  window.addEventListener("beforeunload", cleanup);
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const anchor = target.closest('a[href^="/"]');
+    if (!anchor) return;
+    disconnectGlobalEvents();
+  }, true);
 }
 
 function renderPage() {
@@ -1255,6 +1278,7 @@ function renderHistory() {
       </div>
     `;
     node.addEventListener("click", () => {
+      disconnectGlobalEvents();
       const url = new URL(window.location.origin + "/");
       url.searchParams.set("session", session.id);
       window.location.href = url.toString();
@@ -1371,6 +1395,7 @@ async function handleAutomationAction(action, rule, message, form) {
     }
     if (action === "open-run") {
       if (rule.session_id) {
+        disconnectGlobalEvents();
         window.location.href = `/?session=${encodeURIComponent(rule.session_id)}`;
       } else if (rule.last_run_id) {
         message.textContent = `最近 run：${rule.last_run_id}`;
@@ -1943,7 +1968,12 @@ async function initChatPage() {
 
 async function init() {
   await loadCore();
-  connectGlobalEvents();
+  bindGlobalNavigationCleanup();
+  if (page === "chat") {
+    connectGlobalEvents();
+  } else {
+    disconnectGlobalEvents();
+  }
   if (page === "chat") {
     await initChatPage();
   }
