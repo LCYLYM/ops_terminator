@@ -26,6 +26,7 @@ ssh_remote() {
 }
 
 ssh_remote "set -euo pipefail
+export PATH=/usr/local/go/bin:\$PATH
 if ! command -v git >/dev/null 2>&1; then echo 'git missing on remote' >&2; exit 20; fi
 if ! command -v go >/dev/null 2>&1; then echo 'go missing on remote' >&2; exit 21; fi
 mkdir -p '${REMOTE_DIR}'
