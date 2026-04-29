@@ -14,6 +14,7 @@ OSAGENT_LLM_BASE_URL="${OSAGENT_LLM_BASE_URL:-https://api.hbyzn.cn}"
 OSAGENT_LLM_MODEL="${OSAGENT_LLM_MODEL:-qwen3.6-plus}"
 OSAGENT_EMBEDDING_MODEL="${OSAGENT_EMBEDDING_MODEL:-text-embedding-3-small}"
 OSAGENT_LLM_API_KEY="${OSAGENT_LLM_API_KEY:?OSAGENT_LLM_API_KEY is required}"
+REMOTE_GOPROXY="${REMOTE_GOPROXY:-https://goproxy.cn,direct}"
 
 ssh_remote() {
   if [ -n "${SSHPASS:-}" ]; then
@@ -27,6 +28,7 @@ ssh_remote() {
 
 ssh_remote "set -euo pipefail
 export PATH=/usr/local/go/bin:\$PATH
+export GOPROXY='${REMOTE_GOPROXY}'
 if ! command -v git >/dev/null 2>&1; then echo 'git missing on remote' >&2; exit 20; fi
 if ! command -v go >/dev/null 2>&1; then echo 'go missing on remote' >&2; exit 21; fi
 mkdir -p '${REMOTE_DIR}'
