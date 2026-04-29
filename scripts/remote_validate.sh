@@ -68,6 +68,7 @@ LC_ALL=C
 EOF
 go test ./...
 go build ./...
+go build -o /tmp/ops-terminator-test ./cmd/osagent
 cat > /etc/systemd/system/ops-terminator-test.service <<EOF
 [Unit]
 Description=ops_terminator remote validation service
@@ -79,7 +80,7 @@ WorkingDirectory=${REMOTE_DIR}
 EnvironmentFile=${REMOTE_DIR}/.env
 Environment=LANG=C
 Environment=LC_ALL=C
-ExecStart=\$(command -v go) run ./cmd/osagent serve
+ExecStart=/tmp/ops-terminator-test serve
 Restart=on-failure
 RestartSec=3
 
