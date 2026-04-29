@@ -38,6 +38,18 @@ const (
 	PolicyDecisionDeny  = "deny"
 )
 
+const (
+	KnowledgeStatusPending = "pending"
+	KnowledgeStatusActive  = "active"
+)
+
+const (
+	KnowledgeKindMemory     = "memory"
+	KnowledgeKindPreference = "preference"
+	KnowledgeKindSOP        = "sop"
+	KnowledgeKindIncident   = "incident"
+)
+
 type Host struct {
 	ID          string            `json:"id"`
 	DisplayName string            `json:"display_name"`
@@ -79,6 +91,7 @@ type RuntimeSettings struct {
 	ToolResultMaxChars       int  `json:"tool_result_max_chars"`
 	ToolResultHeadChars      int  `json:"tool_result_head_chars"`
 	ToolResultTailChars      int  `json:"tool_result_tail_chars"`
+	SOPRetrievalLimit        int  `json:"sop_retrieval_limit"`
 }
 
 type SessionMode struct {
@@ -178,6 +191,9 @@ type Approval struct {
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
 	BatchIndex       int        `json:"batch_index,omitempty"`
 	ToolName         string     `json:"tool_name"`
+	RuleID           string     `json:"rule_id,omitempty"`
+	RuleSeverity     string     `json:"rule_severity,omitempty"`
+	RuleCategory     string     `json:"rule_category,omitempty"`
 	Reason           string     `json:"reason"`
 	Scope            string     `json:"scope"`
 	SaferAlternative string     `json:"safer_alternative,omitempty"`
@@ -214,6 +230,7 @@ type GatewayHealth struct {
 	PresetName       string           `json:"preset_name,omitempty"`
 	BaseURL          string           `json:"base_url,omitempty"`
 	Model            string           `json:"model"`
+	EmbeddingModel   string           `json:"embedding_model,omitempty"`
 	PolicySummary    string           `json:"policy_summary"`
 	TotalHosts       int              `json:"total_hosts"`
 	TotalSessions    int              `json:"total_sessions"`
@@ -320,6 +337,42 @@ type AuditEntry struct {
 	CreatedAt time.Time      `json:"created_at"`
 }
 
+type KnowledgeItem struct {
+	ID              string     `json:"id"`
+	Kind            string     `json:"kind"`
+	Status          string     `json:"status"`
+	Scope           string     `json:"scope"`
+	Title           string     `json:"title"`
+	Body            string     `json:"body"`
+	SourceRunID     string     `json:"source_run_id,omitempty"`
+	SourceTurnID    string     `json:"source_turn_id,omitempty"`
+	SourceEventID   string     `json:"source_event_id,omitempty"`
+	SourceSOPID     string     `json:"source_sop_id,omitempty"`
+	Confidence      float64    `json:"confidence,omitempty"`
+	Embedding       []float64  `json:"embedding,omitempty"`
+	EmbeddingModel  string     `json:"embedding_model,omitempty"`
+	EmbeddingStatus string     `json:"embedding_status,omitempty"`
+	EmbeddingError  string     `json:"embedding_error,omitempty"`
+	Tags            []string   `json:"tags,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	ApprovedAt      *time.Time `json:"approved_at,omitempty"`
+	ApprovedBy      string     `json:"approved_by,omitempty"`
+}
+
+type OperatorProfile struct {
+	ID                       string    `json:"id"`
+	ApprovalStrictness       string    `json:"approval_strictness"`
+	AllowBypassApprovals     bool      `json:"allow_bypass_approvals"`
+	AllowForceApprove        bool      `json:"allow_force_approve"`
+	AllowPlaintextSSHWarning bool      `json:"allow_plaintext_ssh_warning"`
+	AllowAutomationBypass    bool      `json:"allow_automation_bypass"`
+	PreferReadOnlyFirst      bool      `json:"prefer_read_only_first"`
+	RemoteValidationRequired bool      `json:"remote_validation_required"`
+	Notes                    []string  `json:"notes,omitempty"`
+	UpdatedAt                time.Time `json:"updated_at"`
+}
+
 type SkillDefinition struct {
 	ID                string   `json:"id"`
 	Title             string   `json:"title"`
@@ -333,25 +386,30 @@ type SkillDefinition struct {
 }
 
 type SkillSummary struct {
-	ID           string   `json:"id"`
-	Title        string   `json:"title"`
-	Description  string   `json:"description"`
-	RiskCategory string   `json:"risk_category"`
-	Examples     []string `json:"examples"`
+	ID                string   `json:"id"`
+	Title             string   `json:"title"`
+	Description       string   `json:"description"`
+	RiskCategory      string   `json:"risk_category"`
+	Examples          []string `json:"examples"`
+	Flow              []string `json:"flow,omitempty"`
+	DecisionHints     []string `json:"decision_hints,omitempty"`
+	SaferAlternatives []string `json:"safer_alternatives,omitempty"`
 }
 
 type ContextSnapshot struct {
-	HostID             string         `json:"host_id"`
-	HostDisplayName    string         `json:"host_display_name"`
-	HostMode           string         `json:"host_mode"`
-	SessionSummary     string         `json:"session_summary,omitempty"`
-	HostProfileSummary string         `json:"host_profile_summary,omitempty"`
-	RollingSummary     string         `json:"rolling_summary,omitempty"`
-	OlderUserLedger    []string       `json:"older_user_ledger,omitempty"`
-	OpenThreads        []string       `json:"open_threads,omitempty"`
-	PolicySummary      string         `json:"policy_summary"`
-	SkillSummaries     []SkillSummary `json:"skill_summaries,omitempty"`
-	BuiltinSummaries   []ToolSummary  `json:"builtin_summaries,omitempty"`
+	HostID             string          `json:"host_id"`
+	HostDisplayName    string          `json:"host_display_name"`
+	HostMode           string          `json:"host_mode"`
+	SessionSummary     string          `json:"session_summary,omitempty"`
+	HostProfileSummary string          `json:"host_profile_summary,omitempty"`
+	RollingSummary     string          `json:"rolling_summary,omitempty"`
+	OlderUserLedger    []string        `json:"older_user_ledger,omitempty"`
+	OpenThreads        []string        `json:"open_threads,omitempty"`
+	OperatorProfile    OperatorProfile `json:"operator_profile,omitempty"`
+	PolicySummary      string          `json:"policy_summary"`
+	SkillSummaries     []SkillSummary  `json:"skill_summaries,omitempty"`
+	KnowledgeMatches   []KnowledgeItem `json:"knowledge_matches,omitempty"`
+	BuiltinSummaries   []ToolSummary   `json:"builtin_summaries,omitempty"`
 }
 
 type ToolSummary struct {
@@ -412,10 +470,32 @@ type ActionPreview struct {
 }
 
 type PolicyRule struct {
+	RuleID           string `json:"rule_id,omitempty"`
+	Category         string `json:"category,omitempty"`
+	Severity         string `json:"severity,omitempty"`
 	Decision         string `json:"decision"`
 	Reason           string `json:"reason"`
 	Scope            string `json:"scope"`
 	SaferAlternative string `json:"safer_alternative,omitempty"`
+	OverrideAllowed  bool   `json:"override_allowed,omitempty"`
+}
+
+type PolicyRuleConfig struct {
+	ID               string    `json:"id"`
+	Category         string    `json:"category"`
+	Severity         string    `json:"severity"`
+	Decision         string    `json:"decision"`
+	Reason           string    `json:"reason,omitempty"`
+	SaferAlternative string    `json:"safer_alternative,omitempty"`
+	OverrideAllowed  bool      `json:"override_allowed"`
+	Description      string    `json:"description,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"`
+}
+
+type PolicyConfig struct {
+	SchemaVersion string             `json:"schema_version"`
+	Rules         []PolicyRuleConfig `json:"rules"`
+	UpdatedAt     time.Time          `json:"updated_at,omitempty"`
 }
 
 type TurnHistoryItem struct {
@@ -452,19 +532,21 @@ type SessionDetail struct {
 }
 
 type GatewayPreset struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	BaseURL   string    `json:"base_url"`
-	APIKey    string    `json:"api_key"`
-	Model     string    `json:"model"`
-	CreatedAt time.Time `json:"created_at,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	BaseURL          string    `json:"base_url"`
+	APIKey           string    `json:"api_key"`
+	APIKeyConfigured bool      `json:"api_key_configured,omitempty"`
+	Model            string    `json:"model"`
+	CreatedAt        time.Time `json:"created_at,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"`
 }
 
 type GatewayConfig struct {
 	CurrentPresetID string          `json:"current_preset_id"`
 	Presets         []GatewayPreset `json:"presets"`
 	RuntimeSettings RuntimeSettings `json:"runtime_settings,omitempty"`
+	EmbeddingModel  string          `json:"embedding_model,omitempty"`
 	UpdatedAt       time.Time       `json:"updated_at,omitempty"`
 }
 
@@ -473,14 +555,17 @@ type GatewayConfigView struct {
 	CurrentPreset   *GatewayPreset  `json:"current_preset,omitempty"`
 	Presets         []GatewayPreset `json:"presets"`
 	RuntimeSettings RuntimeSettings `json:"runtime_settings,omitempty"`
+	EmbeddingModel  string          `json:"embedding_model,omitempty"`
 	UpdatedAt       time.Time       `json:"updated_at,omitempty"`
 }
 
 type ConversationContext struct {
-	Session         Session         `json:"session"`
-	CurrentTurn     Turn            `json:"current_turn"`
-	HistoricalTurns []Turn          `json:"historical_turns,omitempty"`
-	RuntimeSettings RuntimeSettings `json:"runtime_settings"`
+	Session          Session         `json:"session"`
+	CurrentTurn      Turn            `json:"current_turn"`
+	HistoricalTurns  []Turn          `json:"historical_turns,omitempty"`
+	RuntimeSettings  RuntimeSettings `json:"runtime_settings"`
+	OperatorProfile  OperatorProfile `json:"operator_profile,omitempty"`
+	KnowledgeMatches []KnowledgeItem `json:"knowledge_matches,omitempty"`
 }
 
 type ExecutionResult struct {
@@ -506,5 +591,19 @@ func DefaultRuntimeSettings() RuntimeSettings {
 		ToolResultMaxChars:       6000,
 		ToolResultHeadChars:      4000,
 		ToolResultTailChars:      1200,
+		SOPRetrievalLimit:        3,
+	}
+}
+
+func DefaultOperatorProfile() OperatorProfile {
+	return OperatorProfile{
+		ID:                       "default",
+		ApprovalStrictness:       "standard",
+		AllowBypassApprovals:     false,
+		AllowForceApprove:        true,
+		AllowPlaintextSSHWarning: true,
+		AllowAutomationBypass:    false,
+		PreferReadOnlyFirst:      true,
+		RemoteValidationRequired: true,
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,9 @@ import (
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/settings/gateway", s.handleGatewaySettings)
+	mux.HandleFunc("/api/settings/operator", s.handleOperatorSettings)
+	mux.HandleFunc("/api/settings/policy", s.handlePolicySettings)
+	mux.HandleFunc("/api/knowledge", s.handleKnowledge)
 	mux.HandleFunc("/api/hosts", s.handleHosts)
 	mux.HandleFunc("/api/automations", s.handleAutomations)
 	mux.HandleFunc("/api/automations/", s.handleAutomationRoutes)
@@ -55,6 +59,84 @@ func (s *Service) handleGatewaySettings(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func (s *Service) handlePolicySettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		config, err := s.PolicyConfig()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, config)
+	case http.MethodPut:
+		var request models.PolicyConfig
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		updated, err := s.UpdatePolicyConfig(request, "api")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, updated)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) handleOperatorSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		profile, err := s.OperatorProfile()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, profile)
+	case http.MethodPut:
+		var request models.OperatorProfile
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		updated, err := s.UpdateOperatorProfile(request, "api")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, updated)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) handleKnowledge(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		items, err := s.ListKnowledge()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	case http.MethodPost:
+		var item models.KnowledgeItem
+		if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		saved, err := s.SaveKnowledge(item)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, saved)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
 func (s *Service) handleHosts(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -89,6 +171,7 @@ func (s *Service) handleRuns(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		items = limitItems(items, parsePositiveInt(r, "limit", 0))
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	case http.MethodPost:
 		var request RunRequest
@@ -117,6 +200,7 @@ func (s *Service) handleSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	items = limitItems(items, parsePositiveInt(r, "limit", 0))
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -153,7 +237,11 @@ func (s *Service) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	detail, found, err := s.GetSessionDetail(path)
+	detail, found, err := s.GetSessionDetailWithOptions(path, SessionDetailOptions{
+		TurnLimit:  parsePositiveInt(r, "turn_limit", 0),
+		EventLimit: parsePositiveInt(r, "events_limit", 0),
+		Compact:    parseBoolQuery(r, "compact"),
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -316,6 +404,16 @@ func (s *Service) handleApprovals(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if parseBoolQuery(r, "pending") {
+		filtered := items[:0]
+		for _, item := range items {
+			if item.Decision == "" {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+	items = limitItems(items, parsePositiveInt(r, "limit", 0))
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -344,6 +442,30 @@ func (s *Service) handleApprovalRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, run)
+}
+
+func parsePositiveInt(r *http.Request, key string, fallback int) int {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func parseBoolQuery(r *http.Request, key string) bool {
+	raw := strings.TrimSpace(strings.ToLower(r.URL.Query().Get(key)))
+	return raw == "1" || raw == "true" || raw == "yes"
+}
+
+func limitItems[T any](items []T, limit int) []T {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
 }
 
 func (s *Service) streamRunEvents(w http.ResponseWriter, r *http.Request, runID string) {

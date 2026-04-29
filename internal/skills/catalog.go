@@ -78,11 +78,14 @@ func (c *Catalog) Select(input string, limit int) []models.SkillSummary {
 			continue
 		}
 		result = append(result, models.SkillSummary{
-			ID:           entry.item.ID,
-			Title:        entry.item.Title,
-			Description:  entry.item.Description,
-			RiskCategory: entry.item.RiskCategory,
-			Examples:     entry.item.IntentExamples,
+			ID:                entry.item.ID,
+			Title:             entry.item.Title,
+			Description:       entry.item.Description,
+			RiskCategory:      entry.item.RiskCategory,
+			Examples:          entry.item.IntentExamples,
+			Flow:              entry.item.RecommendedFlow,
+			DecisionHints:     entry.item.DecisionHints,
+			SaferAlternatives: entry.item.SaferAlternatives,
 		})
 	}
 	return result

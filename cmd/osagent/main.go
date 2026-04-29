@@ -206,6 +206,15 @@ func buildService() (*gateway.Service, config.Config, error) {
 	executor := runner.NewExecutor(time.Duration(cfg.RunTimeoutSeconds)*time.Second, cfg.KnownHostsPath)
 	registry := builtin.NewRegistry(executor)
 	policyEngine := policy.New()
+	if savedPolicy, found, err := storeImpl.GetPolicyConfig(); err != nil {
+		return nil, config.Config{}, err
+	} else if found {
+		if err := policyEngine.UpdateRules(savedPolicy.Rules); err != nil {
+			return nil, config.Config{}, err
+		}
+	} else if err := storeImpl.SavePolicyConfig(models.PolicyConfig{SchemaVersion: "1.0", Rules: policyEngine.RuleConfigs(), UpdatedAt: time.Now().UTC()}); err != nil {
+		return nil, config.Config{}, err
+	}
 	skillCatalog, err := skills.Load(filepath.Join(workdir, "configs", "skills"))
 	if err != nil {
 		return nil, config.Config{}, err
@@ -216,6 +225,7 @@ func buildService() (*gateway.Service, config.Config, error) {
 	service.SetLLMClient(llmClient)
 	service.SetGatewayConfig(gatewayConfig)
 	service.SetExecutor(executor)
+	service.SetPolicyEngine(policyEngine)
 	approvalManager := approval.NewManager(storeImpl, service)
 	service.SetApprovals(approvalManager)
 	runtime := agent.New(llmClient, registry, policyEngine, approvalManager, service)
@@ -229,6 +239,9 @@ func loadGatewayConfig(storeImpl store.Store, cfg config.Config) (models.Gateway
 		return models.GatewayConfig{}, err
 	}
 	if found {
+		if strings.TrimSpace(saved.EmbeddingModel) == "" {
+			saved.EmbeddingModel = strings.TrimSpace(cfg.EmbeddingModel)
+		}
 		return saved, nil
 	}
 	defaultConfig := cfg.DefaultGatewayConfig()

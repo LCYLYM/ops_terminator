@@ -24,7 +24,7 @@ func NewBuilder(skillCatalog *skills.Catalog, tools *builtin.Registry, policy *p
 	return &Builder{skills: skillCatalog, tools: tools, policy: policy}
 }
 
-func (b *Builder) Build(host models.Host, session models.Session, userInput string) models.ContextSnapshot {
+func (b *Builder) Build(host models.Host, session models.Session, userInput string, operator models.OperatorProfile, knowledge []models.KnowledgeItem) models.ContextSnapshot {
 	return models.ContextSnapshot{
 		HostID:             host.ID,
 		HostDisplayName:    host.DisplayName,
@@ -34,8 +34,10 @@ func (b *Builder) Build(host models.Host, session models.Session, userInput stri
 		RollingSummary:     session.Memory.RollingSummary,
 		OlderUserLedger:    append([]string(nil), session.Memory.OlderUserLedger...),
 		OpenThreads:        append([]string(nil), session.Memory.OpenThreads...),
+		OperatorProfile:    operator,
 		PolicySummary:      b.policy.Summary(),
 		SkillSummaries:     b.skills.Select(userInput, 4),
+		KnowledgeMatches:   append([]models.KnowledgeItem(nil), knowledge...),
 		BuiltinSummaries:   b.tools.Summaries(),
 	}
 }

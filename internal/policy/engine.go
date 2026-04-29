@@ -4,14 +4,81 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
 	"osagentmvp/internal/models"
 )
 
-type Engine struct{}
+type Engine struct {
+	mu    sync.RWMutex
+	rules map[string]models.PolicyRuleConfig
+}
 
-func New() *Engine { return &Engine{} }
+func New(configs ...[]models.PolicyRuleConfig) *Engine {
+	engine := &Engine{}
+	rules := DefaultRuleConfigs()
+	if len(configs) > 0 && len(configs[0]) > 0 {
+		rules = configs[0]
+	}
+	_ = engine.UpdateRules(rules)
+	return engine
+}
+
+func DefaultRuleConfigs() []models.PolicyRuleConfig {
+	return []models.PolicyRuleConfig{
+		ruleConfig("readonly_builtin_allow", "builtin", "low", models.PolicyDecisionAllow, "只读运维工具允许直接执行。", "", false, "Allow explicit read-only builtin tools."),
+		ruleConfig("mutating_builtin_ask", "builtin", "high", models.PolicyDecisionAsk, "该操作可能修改系统状态，需要审批。", "请先执行只读检查，确认影响范围后再批准变更。", true, "Require human approval for builtin tools that can change host state."),
+		ruleConfig("readonly_shell_allow", "shell", "low", models.PolicyDecisionAllow, "命令经安全解析后仅包含显式只读诊断步骤，允许直接执行。", "", false, "Allow parsed shell commands that only contain explicit read-only diagnostics."),
+		ruleConfig("mutating_shell_ask", "shell", "high", models.PolicyDecisionAsk, "命令包含可能修改系统状态的步骤，需人工确认后执行。", "优先拆成更小的只读 run_shell 诊断；若确需变更，请走审批执行。", true, "Require approval for shell commands that may modify files, services, users, packages, or system state."),
+		ruleConfig("destructive_command_deny", "shell", "critical", models.PolicyDecisionDeny, "命令包含高危或破坏性操作，已拒绝执行。", "请先执行只读诊断命令缩小影响范围，再用审批内置动作或更小范围命令处理。", false, "Reject destructive commands such as filesystem formatting, shutdown, reboot, raw block writes, or broad root deletion."),
+		ruleConfig("remote_download_pipe_shell_deny", "shell", "critical", models.PolicyDecisionDeny, "检测到远程下载内容直接通过管道交给 shell，已拒绝执行。", "请先单独下载并检查内容，再执行明确命令。", false, "Reject remote download output piped directly into a shell interpreter."),
+		ruleConfig("nested_interpreter_deny", "shell", "high", models.PolicyDecisionDeny, "命令尝试通过解释器再次嵌套执行，已拒绝执行。", "请直接把要执行的命令展开成显式 run_shell，而不是再包一层解释器。", false, "Reject nested shell or scripting interpreter execution through flags such as -c and -e."),
+		ruleConfig("complex_shell_syntax_deny", "shell", "high", models.PolicyDecisionDeny, "命令包含未支持或不安全的 shell 语法，已拒绝执行。", "请改成显式、扁平的命令，不要使用命令替换、后台执行、here-doc 或嵌套解释器。", false, "Reject unsupported shell constructs such as command substitution, here-docs, background execution, or process substitution."),
+		ruleConfig("empty_shell_deny", "shell", "medium", models.PolicyDecisionDeny, "空命令已拒绝执行。", "请提供明确的 Linux 命令。", false, "Reject empty shell commands."),
+		ruleConfig("shell_parse_error_deny", "shell", "medium", models.PolicyDecisionDeny, "命令解析失败，已拒绝执行。", "请改用更直接的命令表达，避免复杂转义。", false, "Reject shell commands that cannot be parsed safely."),
+		ruleConfig("missing_executable_deny", "shell", "medium", models.PolicyDecisionDeny, "命令缺少可执行程序，已拒绝执行。", "请提供显式命令，不要只传环境变量或残缺片段。", false, "Reject shell snippets without an executable command."),
+	}
+}
+
+func ruleConfig(id, category, severity, decision, reason, saferAlternative string, overrideAllowed bool, description string) models.PolicyRuleConfig {
+	return models.PolicyRuleConfig{
+		ID:               id,
+		Category:         category,
+		Severity:         severity,
+		Decision:         decision,
+		Reason:           reason,
+		SaferAlternative: saferAlternative,
+		OverrideAllowed:  overrideAllowed,
+		Description:      description,
+		UpdatedAt:        time.Now().UTC(),
+	}
+}
+
+func (e *Engine) RuleConfigs() []models.PolicyRuleConfig {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	items := make([]models.PolicyRuleConfig, 0, len(e.rules))
+	for _, item := range e.rules {
+		items = append(items, item)
+	}
+	return sortRuleConfigs(items)
+}
+
+func (e *Engine) UpdateRules(rules []models.PolicyRuleConfig) error {
+	normalized, err := normalizeRuleConfigs(rules)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.rules = make(map[string]models.PolicyRuleConfig, len(normalized))
+	for _, item := range normalized {
+		e.rules[item.ID] = item
+	}
+	return nil
+}
 
 func (e *Engine) Summary() string {
 	return "默认允许只读运维工具。run_shell 会先做安全解析：显式只读命令直接放行，可能改写系统状态的命令进入审批，复杂绕过语法或明显破坏性命令直接拒绝。"
@@ -23,45 +90,30 @@ func (e *Engine) Check(preview models.ActionPreview) models.PolicyRule {
 	}
 
 	if preview.ReadOnly {
-		return models.PolicyRule{
-			Decision: models.PolicyDecisionAllow,
-			Reason:   "只读运维工具允许直接执行。",
-			Scope:    preview.ToolName,
-		}
+		return e.newPolicyRule("readonly_builtin_allow", "builtin", "low", models.PolicyDecisionAllow, "只读运维工具允许直接执行。", preview.ToolName, "", false)
 	}
 
-	return models.PolicyRule{
-		Decision:         models.PolicyDecisionAsk,
-		Reason:           firstNonEmpty(preview.RiskHint, "该操作可能修改系统状态，需要审批。"),
-		Scope:            preview.ToolName,
-		SaferAlternative: "请先执行只读检查，确认影响范围后再批准变更。",
-	}
+	return e.newPolicyRule("mutating_builtin_ask", "builtin", "high", models.PolicyDecisionAsk, firstNonEmpty(preview.RiskHint, "该操作可能修改系统状态，需要审批。"), preview.ToolName, "请先执行只读检查，确认影响范围后再批准变更。", true)
 }
 
 func (e *Engine) checkRunShell(preview models.ActionPreview) models.PolicyRule {
 	command := strings.TrimSpace(preview.CommandPreview)
 	if command == "" {
-		return models.PolicyRule{
-			Decision:         models.PolicyDecisionDeny,
-			Reason:           "空命令已拒绝执行。",
-			Scope:            preview.ToolName,
-			SaferAlternative: "请提供明确的 Linux 命令。",
-		}
+		return e.newPolicyRule("empty_shell_deny", "shell", "medium", models.PolicyDecisionDeny, "空命令已拒绝执行。", preview.ToolName, "请提供明确的 Linux 命令。", false)
 	}
 
 	assessment := assessShellCommand(command)
-	return models.PolicyRule{
-		Decision:         assessment.Decision,
-		Reason:           assessment.Reason,
-		Scope:            command,
-		SaferAlternative: assessment.SaferAlternative,
-	}
+	return e.newPolicyRule(assessment.RuleID, assessment.Category, assessment.Severity, assessment.Decision, assessment.Reason, command, assessment.SaferAlternative, assessment.OverrideAllowed)
 }
 
 type shellAssessment struct {
 	Decision         string
+	RuleID           string
+	Category         string
+	Severity         string
 	Reason           string
 	SaferAlternative string
+	OverrideAllowed  bool
 }
 
 type shellSegment struct {
@@ -76,15 +128,23 @@ func assessShellCommand(command string) shellAssessment {
 	if err != nil {
 		return shellAssessment{
 			Decision:         models.PolicyDecisionDeny,
+			RuleID:           "complex_shell_syntax_deny",
+			Category:         "shell",
+			Severity:         "high",
 			Reason:           "命令包含未支持或不安全的 shell 语法，已拒绝执行。",
 			SaferAlternative: "请改成显式、扁平的命令，不要使用命令替换、后台执行、here-doc 或嵌套解释器。",
+			OverrideAllowed:  false,
 		}
 	}
 	if len(segments) == 0 {
 		return shellAssessment{
 			Decision:         models.PolicyDecisionDeny,
+			RuleID:           "empty_shell_deny",
+			Category:         "shell",
+			Severity:         "medium",
 			Reason:           "命令为空，已拒绝执行。",
 			SaferAlternative: "请提供明确的命令。",
+			OverrideAllowed:  false,
 		}
 	}
 
@@ -93,23 +153,35 @@ func assessShellCommand(command string) shellAssessment {
 		if err != nil {
 			return shellAssessment{
 				Decision:         models.PolicyDecisionDeny,
+				RuleID:           "shell_parse_error_deny",
+				Category:         "shell",
+				Severity:         "medium",
 				Reason:           "命令解析失败，已拒绝执行。",
 				SaferAlternative: "请改用更直接的命令表达，避免复杂转义。",
+				OverrideAllowed:  false,
 			}
 		}
 		cmd, args := extractCommand(words)
 		if cmd == "" {
 			return shellAssessment{
 				Decision:         models.PolicyDecisionDeny,
+				RuleID:           "missing_executable_deny",
+				Category:         "shell",
+				Severity:         "medium",
 				Reason:           "命令缺少可执行程序，已拒绝执行。",
 				SaferAlternative: "请提供显式命令，不要只传环境变量或残缺片段。",
+				OverrideAllowed:  false,
 			}
 		}
 		if isNestedInterpreter(cmd, args) {
 			return shellAssessment{
 				Decision:         models.PolicyDecisionDeny,
+				RuleID:           "nested_interpreter_deny",
+				Category:         "shell",
+				Severity:         "high",
 				Reason:           fmt.Sprintf("命令尝试通过 %s 再次嵌套解释执行，已拒绝执行。", cmd),
 				SaferAlternative: "请直接把要执行的命令展开成显式 run_shell，而不是再包一层解释器。",
+				OverrideAllowed:  false,
 			}
 		}
 		segments[idx].Command = cmd
@@ -120,8 +192,12 @@ func assessShellCommand(command string) shellAssessment {
 		if segments[i].Separator == "|" && isRemoteFetchCommand(segments[i].Command) && isShellProgram(segments[i+1].Command) {
 			return shellAssessment{
 				Decision:         models.PolicyDecisionDeny,
+				RuleID:           "remote_download_pipe_shell_deny",
+				Category:         "shell",
+				Severity:         "critical",
 				Reason:           "检测到远程下载内容直接通过管道交给 shell，已拒绝执行。",
 				SaferAlternative: "请先单独下载并检查内容，再执行明确命令。",
+				OverrideAllowed:  false,
 			}
 		}
 	}
@@ -130,8 +206,12 @@ func assessShellCommand(command string) shellAssessment {
 		if isDestructiveCommand(segment.Command, segment.Args, segment.Raw) {
 			return shellAssessment{
 				Decision:         models.PolicyDecisionDeny,
+				RuleID:           "destructive_command_deny",
+				Category:         "shell",
+				Severity:         "critical",
 				Reason:           fmt.Sprintf("命令包含高危或破坏性操作（%s），已拒绝执行。", segment.Command),
 				SaferAlternative: "请先执行只读诊断命令缩小影响范围，再用审批内置动作或更小范围命令处理。",
+				OverrideAllowed:  false,
 			}
 		}
 	}
@@ -150,8 +230,12 @@ func assessShellCommand(command string) shellAssessment {
 
 	if allReadOnly {
 		return shellAssessment{
-			Decision: models.PolicyDecisionAllow,
-			Reason:   "命令经安全解析后仅包含显式只读诊断步骤，允许直接执行。",
+			Decision:        models.PolicyDecisionAllow,
+			RuleID:          "readonly_shell_allow",
+			Category:        "shell",
+			Severity:        "low",
+			Reason:          "命令经安全解析后仅包含显式只读诊断步骤，允许直接执行。",
+			OverrideAllowed: false,
 		}
 	}
 
@@ -169,9 +253,111 @@ func assessShellCommand(command string) shellAssessment {
 
 	return shellAssessment{
 		Decision:         models.PolicyDecisionAsk,
+		RuleID:           "mutating_shell_ask",
+		Category:         "shell",
+		Severity:         "high",
 		Reason:           fmt.Sprintf("命令包含可能修改系统状态的步骤（%s），需人工确认后执行。", firstMutation),
 		SaferAlternative: "优先拆成更小的只读 run_shell 诊断；若确需变更，请走审批执行。",
+		OverrideAllowed:  true,
 	}
+}
+
+func (e *Engine) newPolicyRule(ruleID, category, severity, decision, reason, scope, saferAlternative string, overrideAllowed bool) models.PolicyRule {
+	e.mu.RLock()
+	config, ok := e.rules[ruleID]
+	e.mu.RUnlock()
+	if ok {
+		category = firstNonEmpty(config.Category, category)
+		severity = firstNonEmpty(config.Severity, severity)
+		decision = firstNonEmpty(config.Decision, decision)
+		reason = firstNonEmpty(config.Reason, reason)
+		saferAlternative = firstNonEmpty(config.SaferAlternative, saferAlternative)
+		overrideAllowed = config.OverrideAllowed
+	}
+	return models.PolicyRule{
+		RuleID:           ruleID,
+		Category:         category,
+		Severity:         severity,
+		Decision:         decision,
+		Reason:           reason,
+		Scope:            scope,
+		SaferAlternative: saferAlternative,
+		OverrideAllowed:  overrideAllowed,
+	}
+}
+
+func normalizeRuleConfigs(rules []models.PolicyRuleConfig) ([]models.PolicyRuleConfig, error) {
+	defaults := make(map[string]models.PolicyRuleConfig)
+	for _, item := range DefaultRuleConfigs() {
+		defaults[item.ID] = item
+	}
+	seen := make(map[string]bool)
+	merged := make([]models.PolicyRuleConfig, 0, len(defaults))
+	for _, item := range rules {
+		item.ID = strings.TrimSpace(item.ID)
+		if item.ID == "" {
+			return nil, fmt.Errorf("policy rule id is required")
+		}
+		base, found := defaults[item.ID]
+		if !found {
+			return nil, fmt.Errorf("unknown policy rule id: %s", item.ID)
+		}
+		item.Category = firstNonEmpty(strings.TrimSpace(item.Category), base.Category)
+		item.Severity = firstNonEmpty(strings.TrimSpace(item.Severity), base.Severity)
+		item.Decision = firstNonEmpty(strings.TrimSpace(item.Decision), base.Decision)
+		item.Reason = strings.TrimSpace(item.Reason)
+		item.SaferAlternative = strings.TrimSpace(item.SaferAlternative)
+		item.Description = firstNonEmpty(strings.TrimSpace(item.Description), base.Description)
+		if isProtectedDenyRule(item.ID) && item.Decision != models.PolicyDecisionDeny {
+			return nil, fmt.Errorf("protected deny rule %s cannot be relaxed", item.ID)
+		}
+		if !isKnownDecision(item.Decision) {
+			return nil, fmt.Errorf("unsupported policy decision for %s: %s", item.ID, item.Decision)
+		}
+		if isProtectedDenyRule(item.ID) {
+			item.OverrideAllowed = false
+		}
+		if item.UpdatedAt.IsZero() {
+			item.UpdatedAt = time.Now().UTC()
+		}
+		seen[item.ID] = true
+		merged = append(merged, item)
+	}
+	for _, item := range DefaultRuleConfigs() {
+		if seen[item.ID] {
+			continue
+		}
+		merged = append(merged, item)
+	}
+	return sortRuleConfigs(merged), nil
+}
+
+func sortRuleConfigs(items []models.PolicyRuleConfig) []models.PolicyRuleConfig {
+	order := make(map[string]int)
+	for index, item := range DefaultRuleConfigs() {
+		order[item.ID] = index
+	}
+	for i := 0; i < len(items)-1; i++ {
+		for j := i + 1; j < len(items); j++ {
+			if order[items[j].ID] < order[items[i].ID] {
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
+	return items
+}
+
+func isProtectedDenyRule(id string) bool {
+	switch id {
+	case "destructive_command_deny", "remote_download_pipe_shell_deny", "nested_interpreter_deny", "complex_shell_syntax_deny", "empty_shell_deny", "shell_parse_error_deny", "missing_executable_deny":
+		return true
+	default:
+		return false
+	}
+}
+
+func isKnownDecision(value string) bool {
+	return value == models.PolicyDecisionAllow || value == models.PolicyDecisionAsk || value == models.PolicyDecisionDeny
 }
 
 func splitShellSegments(command string) ([]shellSegment, error) {

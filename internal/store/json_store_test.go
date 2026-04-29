@@ -83,6 +83,44 @@ func TestJSONStoreGatewayConfigRoundTrip(t *testing.T) {
 	}
 }
 
+func TestJSONStorePolicyConfigRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewJSONStore(root)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	config := models.PolicyConfig{
+		SchemaVersion: "1.0",
+		UpdatedAt:     time.Now().UTC(),
+		Rules: []models.PolicyRuleConfig{
+			{
+				ID:               "readonly_shell_allow",
+				Category:         "shell",
+				Severity:         "low",
+				Decision:         models.PolicyDecisionAllow,
+				Reason:           "readonly",
+				SaferAlternative: "",
+				OverrideAllowed:  false,
+			},
+		},
+	}
+	if err := store.SavePolicyConfig(config); err != nil {
+		t.Fatalf("save policy config: %v", err)
+	}
+
+	got, found, err := store.GetPolicyConfig()
+	if err != nil {
+		t.Fatalf("get policy config: %v", err)
+	}
+	if !found {
+		t.Fatal("expected policy config to exist")
+	}
+	if got.SchemaVersion != "1.0" || len(got.Rules) != 1 || got.Rules[0].ID != "readonly_shell_allow" {
+		t.Fatalf("unexpected policy config: %+v", got)
+	}
+}
+
 func TestJSONStoreAutomationRoundTrip(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewJSONStore(root)

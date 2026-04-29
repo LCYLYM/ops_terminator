@@ -152,7 +152,7 @@ func (r *Runtime) Execute(ctx context.Context, run models.Run, host models.Host,
 				RunID:     run.ID,
 				Type:      "run.policy_checked",
 				Message:   plan.rule.Reason,
-				Payload:   map[string]any{"tool_name": preview.ToolName, "decision": plan.rule.Decision, "scope": plan.rule.Scope},
+				Payload:   map[string]any{"tool_name": preview.ToolName, "decision": plan.rule.Decision, "scope": plan.rule.Scope, "rule_id": plan.rule.RuleID, "severity": plan.rule.Severity, "category": plan.rule.Category},
 				Timestamp: time.Now().UTC(),
 			})
 			switch {
@@ -165,7 +165,7 @@ func (r *Runtime) Execute(ctx context.Context, run models.Run, host models.Host,
 					RunID:     run.ID,
 					Type:      "run.approval_bypassed",
 					Message:   "bypass mode auto-approved tool execution",
-					Payload:   map[string]any{"tool_name": preview.ToolName, "scope": plan.rule.Scope},
+					Payload:   map[string]any{"tool_name": preview.ToolName, "scope": plan.rule.Scope, "rule_id": plan.rule.RuleID, "severity": plan.rule.Severity},
 					Timestamp: time.Now().UTC(),
 				})
 			default:
@@ -286,6 +286,12 @@ func (r *Runtime) buildConversationMessages(host models.Host, convo models.Conve
 		{Role: "system", Content: r.systemPrompt(convo.CurrentTurn.ContextSnapshot)},
 		{Role: "system", Content: renderHostProfilePrompt(host, memory.HostProfile)},
 	}
+	if text := renderOperatorProfilePrompt(convo.OperatorProfile); text != "" {
+		messages = append(messages, models.ChatMessage{Role: "system", Content: text})
+	}
+	if text := renderKnowledgePrompt(convo.KnowledgeMatches); text != "" {
+		messages = append(messages, models.ChatMessage{Role: "system", Content: text})
+	}
 	if text := renderMemoryPrompt(memory); text != "" {
 		messages = append(messages, models.ChatMessage{Role: "system", Content: text})
 	}
@@ -294,6 +300,33 @@ func (r *Runtime) buildConversationMessages(host models.Host, convo models.Conve
 	}
 	messages = append(messages, models.ChatMessage{Role: "user", Content: convo.CurrentTurn.UserInput})
 	return estimateConversationTokens(messages, toolDefs), messages
+}
+
+func renderOperatorProfilePrompt(profile models.OperatorProfile) string {
+	if strings.TrimSpace(profile.ID) == "" {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprintf(`
+Operator preferences:
+- approval_strictness: %s
+- allow_bypass_approvals: %t
+- allow_force_approve: %t
+- allow_plaintext_ssh_warning: %t
+- allow_automation_bypass: %t
+- prefer_read_only_first: %t
+- remote_validation_required: %t
+`, profile.ApprovalStrictness, profile.AllowBypassApprovals, profile.AllowForceApprove, profile.AllowPlaintextSSHWarning, profile.AllowAutomationBypass, profile.PreferReadOnlyFirst, profile.RemoteValidationRequired))
+}
+
+func renderKnowledgePrompt(items []models.KnowledgeItem) string {
+	if len(items) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, item := range items {
+		lines = append(lines, fmt.Sprintf("- [%s/%s] %s: %s", item.Kind, item.ID, item.Title, truncateMiddle(item.Body, 360)))
+	}
+	return "Relevant SOPs and approved knowledge:\n" + strings.Join(lines, "\n")
 }
 
 func (r *Runtime) compactHistory(ctx context.Context, host models.Host, session models.Session, historyTurns []models.Turn, memory models.MemoryState, settings models.RuntimeSettings) (models.MemoryState, int, bool, error) {
@@ -418,6 +451,7 @@ Rules:
 8. Command results may be truncated; if evidence is insufficient, run a narrower follow-up command instead of guessing.
 9. If enough evidence is collected, stop calling tools and answer directly.
 10. The control plane will enforce approval and safety. You should still minimize risk.
+11. If relevant SOPs or approved knowledge are provided, cite their ids in your reasoning summary and do not invent missing facts.
 
 Session summary:
 %s

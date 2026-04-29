@@ -12,6 +12,9 @@ func TestPolicyAllowsReadOnlyTool(t *testing.T) {
 	if result.Decision != models.PolicyDecisionAllow {
 		t.Fatalf("unexpected decision: %+v", result)
 	}
+	if result.RuleID == "" || result.Severity == "" {
+		t.Fatalf("expected rule metadata: %+v", result)
+	}
 }
 
 func TestPolicyAllowsReadOnlyShellSequence(t *testing.T) {
@@ -23,6 +26,9 @@ func TestPolicyAllowsReadOnlyShellSequence(t *testing.T) {
 	if result.Decision != models.PolicyDecisionAllow {
 		t.Fatalf("unexpected decision: %+v", result)
 	}
+	if result.RuleID != "readonly_shell_allow" {
+		t.Fatalf("unexpected rule id: %+v", result)
+	}
 }
 
 func TestPolicyAsksForEnvWrappedMutation(t *testing.T) {
@@ -33,6 +39,9 @@ func TestPolicyAsksForEnvWrappedMutation(t *testing.T) {
 	})
 	if result.Decision != models.PolicyDecisionAsk {
 		t.Fatalf("unexpected decision: %+v", result)
+	}
+	if result.RuleID != "mutating_shell_ask" || !result.OverrideAllowed {
+		t.Fatalf("unexpected rule metadata: %+v", result)
 	}
 }
 
@@ -67,6 +76,9 @@ func TestPolicyDeniesDestructiveShell(t *testing.T) {
 	if result.Decision != models.PolicyDecisionDeny {
 		t.Fatalf("unexpected decision: %+v", result)
 	}
+	if result.RuleID != "destructive_command_deny" || result.OverrideAllowed {
+		t.Fatalf("unexpected rule metadata: %+v", result)
+	}
 }
 
 func TestPolicyDeniesNestedInterpreterSyntax(t *testing.T) {
@@ -78,6 +90,9 @@ func TestPolicyDeniesNestedInterpreterSyntax(t *testing.T) {
 	if result.Decision != models.PolicyDecisionDeny {
 		t.Fatalf("unexpected decision: %+v", result)
 	}
+	if result.RuleID != "nested_interpreter_deny" {
+		t.Fatalf("unexpected rule id: %+v", result)
+	}
 }
 
 func TestPolicyDeniesRemotePipeToShell(t *testing.T) {
@@ -88,5 +103,8 @@ func TestPolicyDeniesRemotePipeToShell(t *testing.T) {
 	})
 	if result.Decision != models.PolicyDecisionDeny {
 		t.Fatalf("unexpected decision: %+v", result)
+	}
+	if result.RuleID != "remote_download_pipe_shell_deny" {
+		t.Fatalf("unexpected rule id: %+v", result)
 	}
 }

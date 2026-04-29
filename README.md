@@ -9,6 +9,9 @@ ops terminal 是面向 Linux 运维场景的统一操作控制台。系统把主
 - 风险控制：只读操作直接执行，变更类操作进入人工审批，危险命令按策略拒绝。
 - 可追溯：完整保留 `host / session / turn / run / approval / event / audit` 记录。
 - 可扩展：内置工具、策略规则、主机类型和执行后端保持模块化。
+- 可沉淀：支持安全规则元数据、操作员偏好、长期知识候选和 SOP 检索注入。
+
+长期安全、记忆、偏好和 SOP 体系见 [`docs/long_running_agent_governance.md`](docs/long_running_agent_governance.md)。远端验证流程见 [`docs/remote_validation_runbook.md`](docs/remote_validation_runbook.md)。
 
 ## 核心能力
 
@@ -75,6 +78,7 @@ cp .env.example .env
 OSAGENT_LLM_API_KEY=...
 OSAGENT_LLM_BASE_URL=...
 OSAGENT_LLM_MODEL=...
+OSAGENT_EMBEDDING_MODEL=text-embedding-3-small
 ```
 
 3. 启动服务：
@@ -102,6 +106,14 @@ go run ./cmd/osagent approve --id <approval-id> --decision approve
 ```
 
 ## 验证
+
+本项目的正式验收以远端服务器为准，本机不作为最终测试环境。远端流程：
+
+```bash
+bash scripts/remote_validate.sh
+```
+
+开发者可在远端执行：
 
 ```bash
 go test ./...

@@ -30,6 +30,7 @@ type Service struct {
 	logger    *log.Logger
 	llmClient GatewayClient
 	executor  *runner.Executor
+	policy    *policy.Engine
 
 	settingsMu    sync.RWMutex
 	gatewayConfig models.GatewayConfig
@@ -47,6 +48,7 @@ type ApprovalResolver interface {
 type GatewayClient interface {
 	UpdateConfig(baseURL, apiKey, model string)
 	SnapshotConfig() (baseURL, apiKey, model string)
+	EmbedText(context.Context, string, string) ([]float64, error)
 }
 
 type RunRequest struct {
@@ -55,6 +57,12 @@ type RunRequest struct {
 	UserInput       string `json:"user_input"`
 	RequestedBy     string `json:"requested_by,omitempty"`
 	BypassApprovals *bool  `json:"bypass_approvals,omitempty"`
+}
+
+type SessionDetailOptions struct {
+	TurnLimit  int
+	EventLimit int
+	Compact    bool
 }
 
 func NewService(store store.Store, hub *events.Hub, builder *contextbuilder.Builder, runtime Runtime, logger *log.Logger) *Service {
@@ -75,6 +83,10 @@ func (s *Service) SetLLMClient(client GatewayClient) {
 
 func (s *Service) SetExecutor(executor *runner.Executor) {
 	s.executor = executor
+}
+
+func (s *Service) SetPolicyEngine(engine *policy.Engine) {
+	s.policy = engine
 }
 
 func (s *Service) SetGatewayConfig(config models.GatewayConfig) {
@@ -109,6 +121,9 @@ func (s *Service) HealthSnapshot() (models.GatewayHealth, error) {
 	if err != nil {
 		return models.GatewayHealth{}, err
 	}
+	s.settingsMu.RLock()
+	embeddingModel := strings.TrimSpace(s.gatewayConfig.EmbeddingModel)
+	s.settingsMu.RUnlock()
 	activeRuns := 0
 	for _, run := range state.runs {
 		if isActiveRunStatus(run.Status) {
@@ -122,7 +137,8 @@ func (s *Service) HealthSnapshot() (models.GatewayHealth, error) {
 		PresetName:       activePreset.Name,
 		BaseURL:          activePreset.BaseURL,
 		Model:            activePreset.Model,
-		PolicySummary:    policy.New().Summary(),
+		EmbeddingModel:   embeddingModel,
+		PolicySummary:    s.policySummary(),
 		TotalHosts:       len(state.hosts),
 		TotalSessions:    len(state.sessions),
 		TotalRuns:        len(state.runs),
@@ -130,6 +146,13 @@ func (s *Service) HealthSnapshot() (models.GatewayHealth, error) {
 		PendingApprovals: state.pendingApprovalCount,
 		Capabilities:     buildCapabilityViews(state),
 	}, nil
+}
+
+func (s *Service) policySummary() string {
+	if s.policy != nil {
+		return s.policy.Summary()
+	}
+	return policy.New().Summary()
 }
 
 func (s *Service) GatewayConfigView() models.GatewayConfigView {
@@ -540,6 +563,16 @@ func (s *Service) CreateRun(ctx context.Context, request RunRequest) (models.Run
 	if !found {
 		return models.Run{}, fmt.Errorf("host not found: %s", request.HostID)
 	}
+	operatorProfile, err := s.OperatorProfile()
+	if err != nil {
+		return models.Run{}, err
+	}
+	if !operatorProfile.AllowBypassApprovals {
+		settings.BypassApprovals = false
+		if request.BypassApprovals != nil && *request.BypassApprovals {
+			return models.Run{}, fmt.Errorf("operator profile does not allow bypass approvals")
+		}
+	}
 	session, err := s.ensureSession(host, request.SessionID, request.UserInput, models.SessionMode{BypassApprovals: settings.BypassApprovals}, request.BypassApprovals)
 	if err != nil {
 		return models.Run{}, err
@@ -548,7 +581,11 @@ func (s *Service) CreateRun(ctx context.Context, request RunRequest) (models.Run
 	if err != nil {
 		return models.Run{}, err
 	}
-	snapshot := s.builder.Build(host, session, request.UserInput)
+	knowledgeMatches, err := s.SelectKnowledge(ctx, request.UserInput, settings.SOPRetrievalLimit)
+	if err != nil {
+		return models.Run{}, err
+	}
+	snapshot := s.builder.Build(host, session, request.UserInput, operatorProfile, knowledgeMatches)
 	now := time.Now().UTC()
 
 	turn := models.Turn{
@@ -655,16 +692,16 @@ func (s *Service) ResolveApproval(id, decision, actor string) (models.Run, error
 }
 
 func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error) {
+	return s.GetSessionDetailWithOptions(id, SessionDetailOptions{})
+}
+
+func (s *Service) GetSessionDetailWithOptions(id string, options SessionDetailOptions) (models.SessionDetail, bool, error) {
 	session, found, err := s.store.GetSession(id)
 	if err != nil || !found {
 		return models.SessionDetail{}, found, err
 	}
 	host, found, err := s.store.GetHost(session.HostID)
 	if err != nil || !found {
-		return models.SessionDetail{}, false, err
-	}
-	allTurns, err := s.store.ListTurns()
-	if err != nil {
 		return models.SessionDetail{}, false, err
 	}
 	allApprovals, err := s.store.ListApprovals()
@@ -674,16 +711,38 @@ func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error
 
 	approvalsByRun := make(map[string][]models.Approval)
 	pendingApprovals := make([]models.Approval, 0)
+	sessionRunIDs := make(map[string]bool, len(session.RunIDs))
+	for _, runID := range session.RunIDs {
+		sessionRunIDs[runID] = true
+	}
 	for _, approval := range allApprovals {
+		if !sessionRunIDs[approval.RunID] {
+			continue
+		}
 		approvalsByRun[approval.RunID] = append(approvalsByRun[approval.RunID], approval)
-		if approval.Decision == "" && contains(session.RunIDs, approval.RunID) {
+		if approval.Decision == "" {
 			pendingApprovals = append(pendingApprovals, approval)
 		}
 	}
 
-	items := make([]models.TurnHistoryItem, 0, len(session.TurnIDs))
-	for _, turn := range allTurns {
-		if turn.SessionID != session.ID {
+	turnIDs := limitedTail(session.TurnIDs, options.TurnLimit)
+	items := make([]models.TurnHistoryItem, 0, len(turnIDs))
+	runsByID := make(map[string]models.Run, len(session.RunIDs))
+	for _, runID := range session.RunIDs {
+		run, found, err := s.store.GetRun(runID)
+		if err != nil {
+			return models.SessionDetail{}, false, err
+		}
+		if found {
+			runsByID[runID] = run
+		}
+	}
+	for _, turnID := range turnIDs {
+		turn, found, err := s.store.GetTurn(turnID)
+		if err != nil {
+			return models.SessionDetail{}, false, err
+		}
+		if !found || turn.SessionID != session.ID {
 			continue
 		}
 		run, _, err := s.store.GetRun(turn.RunID)
@@ -694,7 +753,8 @@ func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error
 		if err != nil {
 			return models.SessionDetail{}, false, err
 		}
-		items = append(items, models.TurnHistoryItem{
+		runEvents = limitedTail(runEvents, options.EventLimit)
+		item := models.TurnHistoryItem{
 			Turn:            turn,
 			Run:             run,
 			Events:          runEvents,
@@ -704,7 +764,11 @@ func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error
 			ConsoleOutput:   collectToolResultOutput(turn.ToolResults, runEvents),
 			LastEventAt:     latestEventTimestamp(runEvents),
 			WaitingApproval: hasPendingApproval(approvalsByRun[turn.RunID]),
-		})
+		}
+		if options.Compact {
+			item = compactTurnHistoryItem(item)
+		}
+		items = append(items, item)
 	}
 
 	sort.Slice(items, func(i, j int) bool {
@@ -720,7 +784,7 @@ func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error
 		Memory:           session.Memory,
 		Turns:            items,
 		PendingApprovals: pendingApprovals,
-		PendingBatches:   buildPendingApprovalBatches(session.RunIDs, allApprovals, statefulRunsByID(items)),
+		PendingBatches:   buildPendingApprovalBatches(session.RunIDs, allApprovals, runsByID),
 	}, true, nil
 }
 
@@ -739,6 +803,183 @@ func (s *Service) UpdateSessionMode(id string, mode models.SessionMode) (models.
 	}
 	s.invalidateDashboardCache()
 	return session, nil
+}
+
+func (s *Service) OperatorProfile() (models.OperatorProfile, error) {
+	profile, found, err := s.store.GetOperatorProfile()
+	if err != nil {
+		return models.OperatorProfile{}, err
+	}
+	if !found {
+		profile = models.DefaultOperatorProfile()
+		profile.UpdatedAt = time.Now().UTC()
+		if err := s.store.SaveOperatorProfile(profile); err != nil {
+			return models.OperatorProfile{}, err
+		}
+		return profile, nil
+	}
+	return normalizeOperatorProfile(profile), nil
+}
+
+func (s *Service) UpdateOperatorProfile(profile models.OperatorProfile, actor string) (models.OperatorProfile, error) {
+	profile = normalizeOperatorProfile(profile)
+	profile.UpdatedAt = time.Now().UTC()
+	if err := s.store.SaveOperatorProfile(profile); err != nil {
+		return models.OperatorProfile{}, err
+	}
+	_ = s.store.AppendAudit(models.AuditEntry{
+		ID:        models.NewID("audit"),
+		Kind:      "operator_profile_updated",
+		Summary:   "operator profile updated",
+		Payload:   map[string]any{"actor": firstNonEmpty(actor, "api"), "approval_strictness": profile.ApprovalStrictness, "prefer_read_only_first": profile.PreferReadOnlyFirst},
+		CreatedAt: profile.UpdatedAt,
+	})
+	return profile, nil
+}
+
+func (s *Service) PolicyConfig() (models.PolicyConfig, error) {
+	config, found, err := s.store.GetPolicyConfig()
+	if err != nil {
+		return models.PolicyConfig{}, err
+	}
+	if found && len(config.Rules) > 0 {
+		return normalizePolicyConfig(config)
+	}
+	rules := policy.DefaultRuleConfigs()
+	if s.policy != nil {
+		rules = s.policy.RuleConfigs()
+	}
+	config = models.PolicyConfig{
+		SchemaVersion: "1.0",
+		Rules:         rules,
+		UpdatedAt:     time.Now().UTC(),
+	}
+	if err := s.store.SavePolicyConfig(config); err != nil {
+		return models.PolicyConfig{}, err
+	}
+	return config, nil
+}
+
+func (s *Service) UpdatePolicyConfig(config models.PolicyConfig, actor string) (models.PolicyConfig, error) {
+	config, err := normalizePolicyConfig(config)
+	if err != nil {
+		return models.PolicyConfig{}, err
+	}
+	if s.policy == nil {
+		return models.PolicyConfig{}, fmt.Errorf("policy engine is not configured")
+	}
+	if err := s.policy.UpdateRules(config.Rules); err != nil {
+		return models.PolicyConfig{}, err
+	}
+	config.Rules = s.policy.RuleConfigs()
+	config.UpdatedAt = time.Now().UTC()
+	if err := s.store.SavePolicyConfig(config); err != nil {
+		return models.PolicyConfig{}, err
+	}
+	_ = s.store.AppendAudit(models.AuditEntry{
+		ID:        models.NewID("audit"),
+		Kind:      "policy_config_updated",
+		Summary:   "shell command safety policy updated",
+		Payload:   map[string]any{"actor": firstNonEmpty(actor, "api"), "rule_count": len(config.Rules)},
+		CreatedAt: config.UpdatedAt,
+	})
+	return config, nil
+}
+
+func (s *Service) ListKnowledge() ([]models.KnowledgeItem, error) {
+	items, err := s.store.ListKnowledge()
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
+	})
+	return items, nil
+}
+
+func (s *Service) SaveKnowledge(item models.KnowledgeItem) (models.KnowledgeItem, error) {
+	item.ID = strings.TrimSpace(item.ID)
+	if item.ID == "" {
+		item.ID = models.NewID("knowledge")
+	}
+	item.Kind = firstNonEmpty(strings.TrimSpace(item.Kind), models.KnowledgeKindMemory)
+	item.Status = firstNonEmpty(strings.TrimSpace(item.Status), models.KnowledgeStatusPending)
+	item.Scope = firstNonEmpty(strings.TrimSpace(item.Scope), "global")
+	item.Title = strings.TrimSpace(item.Title)
+	item.Body = strings.TrimSpace(item.Body)
+	if item.Title == "" || item.Body == "" {
+		return models.KnowledgeItem{}, fmt.Errorf("knowledge title and body are required")
+	}
+	now := time.Now().UTC()
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = now
+	}
+	item.UpdatedAt = now
+	if item.Status == models.KnowledgeStatusActive && item.ApprovedAt == nil {
+		item.ApprovedAt = &now
+		item.ApprovedBy = firstNonEmpty(item.ApprovedBy, "api")
+	}
+	if err := s.store.SaveKnowledge(item); err != nil {
+		return models.KnowledgeItem{}, err
+	}
+	_ = s.store.AppendAudit(models.AuditEntry{
+		ID:        models.NewID("audit"),
+		Kind:      "knowledge_saved",
+		Summary:   item.Title,
+		Payload:   map[string]any{"knowledge_id": item.ID, "kind": item.Kind, "status": item.Status, "scope": item.Scope},
+		CreatedAt: now,
+	})
+	return item, nil
+}
+
+func (s *Service) SelectKnowledge(ctx context.Context, input string, limit int) ([]models.KnowledgeItem, error) {
+	if limit <= 0 {
+		limit = models.DefaultRuntimeSettings().SOPRetrievalLimit
+	}
+	items, err := s.store.ListKnowledge()
+	if err != nil {
+		return nil, err
+	}
+	type scored struct {
+		score int
+		item  models.KnowledgeItem
+	}
+	tokens := strings.Fields(strings.ToLower(input))
+	var scoredItems []scored
+	for _, item := range items {
+		if item.Status != models.KnowledgeStatusActive && item.Kind != models.KnowledgeKindSOP {
+			continue
+		}
+		text := strings.ToLower(item.Title + " " + item.Body + " " + strings.Join(item.Tags, " "))
+		score := 0
+		for _, token := range tokens {
+			if len(token) > 1 && strings.Contains(text, token) {
+				score++
+			}
+		}
+		if item.Kind == models.KnowledgeKindSOP {
+			score += 1
+		}
+		if score > 0 {
+			scoredItems = append(scoredItems, scored{score: score, item: item})
+		}
+	}
+	sort.SliceStable(scoredItems, func(i, j int) bool {
+		if scoredItems[i].score == scoredItems[j].score {
+			return scoredItems[i].item.UpdatedAt.After(scoredItems[j].item.UpdatedAt)
+		}
+		return scoredItems[i].score > scoredItems[j].score
+	})
+	result := make([]models.KnowledgeItem, 0, limit)
+	for _, entry := range scoredItems {
+		if len(result) >= limit {
+			break
+		}
+		entry.item.Embedding = nil
+		result = append(result, entry.item)
+	}
+	_ = ctx
+	return result, nil
 }
 
 func (s *Service) RecordEvent(event models.Event) error {
@@ -790,11 +1031,17 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 		return historyTurns[i].CreatedAt.Before(historyTurns[j].CreatedAt)
 	})
 
+	runtimeSettings := mergeRunModeIntoSettings(s.currentRuntimeSettings(), run.Mode)
+	if !turn.ContextSnapshot.OperatorProfile.AllowBypassApprovals {
+		runtimeSettings.BypassApprovals = false
+	}
 	execResult, execErr := s.runtime.Execute(ctx, run, host, models.ConversationContext{
-		Session:         session,
-		CurrentTurn:     turn,
-		HistoricalTurns: historyTurns,
-		RuntimeSettings: mergeRunModeIntoSettings(s.currentRuntimeSettings(), run.Mode),
+		Session:          session,
+		CurrentTurn:      turn,
+		HistoricalTurns:  historyTurns,
+		RuntimeSettings:  runtimeSettings,
+		OperatorProfile:  turn.ContextSnapshot.OperatorProfile,
+		KnowledgeMatches: turn.ContextSnapshot.KnowledgeMatches,
 	})
 	run.ToolHistory = execResult.ToolHistory
 	run.PolicyHistory = execResult.PolicyHistory
@@ -851,6 +1098,7 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 		Summary:   execResult.FinalResponse,
 		CreatedAt: now,
 	})
+	s.captureKnowledgeCandidate(ctx, run, turn, execResult)
 	_ = s.RecordEvent(models.Event{
 		ID:        models.NewID("event"),
 		RunID:     run.ID,
@@ -931,6 +1179,98 @@ func validateHost(host models.Host) error {
 	}
 }
 
+func normalizeOperatorProfile(profile models.OperatorProfile) models.OperatorProfile {
+	defaults := models.DefaultOperatorProfile()
+	if strings.TrimSpace(profile.ID) == "" {
+		profile.ID = defaults.ID
+	}
+	profile.ApprovalStrictness = strings.TrimSpace(profile.ApprovalStrictness)
+	if profile.ApprovalStrictness == "" {
+		profile.ApprovalStrictness = defaults.ApprovalStrictness
+	}
+	return profile
+}
+
+func normalizePolicyConfig(config models.PolicyConfig) (models.PolicyConfig, error) {
+	if strings.TrimSpace(config.SchemaVersion) == "" {
+		config.SchemaVersion = "1.0"
+	}
+	engine := policy.New()
+	if err := engine.UpdateRules(config.Rules); err != nil {
+		return models.PolicyConfig{}, err
+	}
+	config.Rules = engine.RuleConfigs()
+	if config.UpdatedAt.IsZero() {
+		config.UpdatedAt = time.Now().UTC()
+	}
+	return config, nil
+}
+
+func (s *Service) captureKnowledgeCandidate(ctx context.Context, run models.Run, turn models.Turn, execResult models.ExecutionResult) {
+	body := strings.TrimSpace(execResult.FinalResponse)
+	if body == "" {
+		return
+	}
+	title := strings.TrimSpace(turn.UserInput)
+	if len(title) > 96 {
+		title = title[:96]
+	}
+	s.settingsMu.RLock()
+	embeddingModel := strings.TrimSpace(s.gatewayConfig.EmbeddingModel)
+	s.settingsMu.RUnlock()
+	item := models.KnowledgeItem{
+		ID:             models.NewID("knowledge"),
+		Kind:           models.KnowledgeKindMemory,
+		Status:         models.KnowledgeStatusPending,
+		Scope:          run.HostID,
+		Title:          title,
+		Body:           body,
+		SourceRunID:    run.ID,
+		SourceTurnID:   turn.ID,
+		Confidence:     0.5,
+		Tags:           []string{"candidate", "run_completed"},
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+		EmbeddingModel: embeddingModel,
+	}
+	if s.llmClient != nil && item.EmbeddingModel != "" {
+		vector, err := s.llmClient.EmbedText(ctx, item.Title+"\n"+item.Body, item.EmbeddingModel)
+		if err != nil {
+			item.EmbeddingStatus = "failed"
+			item.EmbeddingError = err.Error()
+			_ = s.RecordEvent(models.Event{
+				ID:        models.NewID("event"),
+				RunID:     run.ID,
+				Type:      "knowledge.embedding_failed",
+				Message:   err.Error(),
+				Payload:   map[string]any{"knowledge_id": item.ID, "embedding_model": item.EmbeddingModel},
+				Timestamp: time.Now().UTC(),
+			})
+		} else {
+			item.Embedding = vector
+			item.EmbeddingStatus = "ok"
+		}
+	}
+	if err := s.store.SaveKnowledge(item); err != nil {
+		_ = s.RecordEvent(models.Event{
+			ID:        models.NewID("event"),
+			RunID:     run.ID,
+			Type:      "knowledge.capture_failed",
+			Message:   err.Error(),
+			Timestamp: time.Now().UTC(),
+		})
+		return
+	}
+	_ = s.store.AppendAudit(models.AuditEntry{
+		ID:        models.NewID("audit"),
+		RunID:     run.ID,
+		Kind:      "knowledge_candidate_created",
+		Summary:   item.Title,
+		Payload:   map[string]any{"knowledge_id": item.ID, "status": item.Status, "embedding_status": item.EmbeddingStatus},
+		CreatedAt: time.Now().UTC(),
+	})
+}
+
 func isValidEnvVarName(value string) bool {
 	if value == "" {
 		return false
@@ -974,6 +1314,50 @@ func statefulRunsByID(items []models.TurnHistoryItem) map[string]models.Run {
 		result[item.Run.ID] = item.Run
 	}
 	return result
+}
+
+func limitedTail[T any](items []T, limit int) []T {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[len(items)-limit:]
+}
+
+func compactTurnHistoryItem(item models.TurnHistoryItem) models.TurnHistoryItem {
+	item.Run.FinalResponse = truncateForDetail(item.Run.FinalResponse, 6000)
+	item.Run.FailureMessage = truncateForDetail(item.Run.FailureMessage, 2000)
+	item.ToolEvents = compactEvents(item.ToolEvents, 1200)
+	item.Events = compactEvents(item.Events, 1200)
+	item.ConsoleOutput = truncateForDetail(item.ConsoleOutput, 6000)
+	item.AssistantText = truncateForDetail(item.AssistantText, 6000)
+	item.Turn.FinalExplanation = truncateForDetail(item.Turn.FinalExplanation, 6000)
+	for i := range item.Turn.ToolResults {
+		item.Turn.ToolResults[i].RawResult = truncateForDetail(item.Turn.ToolResults[i].RawResult, 4000)
+		item.Turn.ToolResults[i].ModelResult = truncateForDetail(item.Turn.ToolResults[i].ModelResult, 4000)
+	}
+	for i := range item.Turn.Messages {
+		item.Turn.Messages[i].Content = truncateForDetail(item.Turn.Messages[i].Content, 6000)
+	}
+	return item
+}
+
+func compactEvents(items []models.Event, limit int) []models.Event {
+	result := make([]models.Event, len(items))
+	copy(result, items)
+	for i := range result {
+		result[i].Message = truncateForDetail(result[i].Message, limit)
+	}
+	return result
+}
+
+func truncateForDetail(value string, limit int) string {
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	if limit < 40 {
+		return value[:limit]
+	}
+	return value[:limit-28] + "\n...[truncated for UI]..."
 }
 
 func buildPendingApprovalBatches(sessionRunIDs []string, approvals []models.Approval, runsByID map[string]models.Run) []models.ApprovalBatch {
@@ -1076,7 +1460,7 @@ func (s *Service) loadDashboardState() (dashboardState, error) {
 		s.dashboardCacheMu.Lock()
 		if err == nil {
 			s.dashboardCache = state
-			s.dashboardCacheUntil = time.Now().Add(250 * time.Millisecond)
+			s.dashboardCacheUntil = time.Now().Add(2 * time.Second)
 		} else {
 			s.dashboardCacheUntil = time.Time{}
 		}
@@ -1475,14 +1859,22 @@ func activeGatewayPreset(config models.GatewayConfig) (models.GatewayPreset, err
 }
 
 func buildGatewayConfigView(config models.GatewayConfig) models.GatewayConfigView {
+	presets := append([]models.GatewayPreset(nil), config.Presets...)
+	for i := range presets {
+		presets[i].APIKeyConfigured = strings.TrimSpace(presets[i].APIKey) != ""
+		presets[i].APIKey = ""
+	}
 	view := models.GatewayConfigView{
 		CurrentPresetID: config.CurrentPresetID,
-		Presets:         append([]models.GatewayPreset(nil), config.Presets...),
+		Presets:         presets,
 		RuntimeSettings: normalizeRuntimeSettings(config.RuntimeSettings),
+		EmbeddingModel:  strings.TrimSpace(config.EmbeddingModel),
 		UpdatedAt:       config.UpdatedAt,
 	}
 	if active, err := activeGatewayPreset(config); err == nil {
 		copyPreset := active
+		copyPreset.APIKeyConfigured = strings.TrimSpace(copyPreset.APIKey) != ""
+		copyPreset.APIKey = ""
 		view.CurrentPreset = &copyPreset
 	}
 	return view
@@ -1492,6 +1884,7 @@ func cloneGatewayConfig(config models.GatewayConfig) models.GatewayConfig {
 	cloned := models.GatewayConfig{
 		CurrentPresetID: config.CurrentPresetID,
 		RuntimeSettings: normalizeRuntimeSettings(config.RuntimeSettings),
+		EmbeddingModel:  strings.TrimSpace(config.EmbeddingModel),
 		UpdatedAt:       config.UpdatedAt,
 		Presets:         make([]models.GatewayPreset, len(config.Presets)),
 	}
@@ -1504,8 +1897,15 @@ func validateGatewayConfig(next, previous models.GatewayConfig) (models.GatewayC
 	result := models.GatewayConfig{
 		CurrentPresetID: strings.TrimSpace(next.CurrentPresetID),
 		RuntimeSettings: normalizeRuntimeSettings(next.RuntimeSettings),
+		EmbeddingModel:  strings.TrimSpace(next.EmbeddingModel),
 		Presets:         make([]models.GatewayPreset, 0, len(next.Presets)),
 		UpdatedAt:       now,
+	}
+	if result.EmbeddingModel == "" {
+		result.EmbeddingModel = strings.TrimSpace(previous.EmbeddingModel)
+	}
+	if result.EmbeddingModel == "" {
+		result.EmbeddingModel = "text-embedding-3-small"
 	}
 	if len(next.Presets) == 0 {
 		return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("at least one gateway preset is required")
@@ -1536,14 +1936,17 @@ func validateGatewayConfig(next, previous models.GatewayConfig) (models.GatewayC
 		if preset.BaseURL == "" {
 			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("gateway preset %q base_url is required", preset.Name)
 		}
-		if preset.APIKey == "" {
-			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("gateway preset %q api_key is required", preset.Name)
-		}
 		if preset.Model == "" {
 			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("gateway preset %q model is required", preset.Name)
 		}
 		if previousPreset, ok := previousByID[preset.ID]; ok {
 			preset.CreatedAt = previousPreset.CreatedAt
+			if preset.APIKey == "" {
+				preset.APIKey = previousPreset.APIKey
+			}
+		}
+		if preset.APIKey == "" {
+			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("gateway preset %q api_key is required", preset.Name)
 		}
 		if preset.CreatedAt.IsZero() {
 			preset.CreatedAt = now
@@ -1593,6 +1996,9 @@ func normalizeRuntimeSettings(settings models.RuntimeSettings) models.RuntimeSet
 	}
 	if settings.ToolResultTailChars < 0 {
 		settings.ToolResultTailChars = defaults.ToolResultTailChars
+	}
+	if settings.SOPRetrievalLimit <= 0 {
+		settings.SOPRetrievalLimit = defaults.SOPRetrievalLimit
 	}
 	return settings
 }

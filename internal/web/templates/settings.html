@@ -106,6 +106,10 @@
                   <input id="settings-preset-base-url-input" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface font-mono" placeholder="https://api.longcat.chat" type="text">
                 </label>
                 <label class="block">
+                  <span class="font-label text-label text-on-surface block mb-2">Embedding 模型</span>
+                  <input id="settings-embedding-model-input" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface font-mono" placeholder="text-embedding-3-small" type="text">
+                </label>
+                <label class="block">
                   <span class="font-label text-label text-on-surface block mb-2">API Key</span>
                   <textarea id="settings-preset-api-key-input" class="w-full min-h-[120px] rounded-[14px] border border-surface-variant bg-surface px-4 py-3 text-on-surface font-mono resize-y" placeholder="sk-..." spellcheck="false"></textarea>
                 </label>
@@ -189,8 +193,145 @@
                 <span class="font-label text-label text-on-surface block mb-2">工具结果 Tail 字符</span>
                 <input id="settings-tool-result-tail-chars-input" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface font-mono" type="number" min="0" step="100">
               </label>
+              <label class="block">
+                <span class="font-label text-label text-on-surface block mb-2">SOP 检索条数</span>
+                <input id="settings-sop-retrieval-limit-input" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface font-mono" type="number" min="1" step="1">
+              </label>
             </div>
           </div>
+        </section>
+
+        <section class="app-card bg-surface-container-lowest border border-surface-variant flex flex-col gap-lg md:col-span-2">
+          <div class="app-card-head">
+            <div>
+              <h3 class="app-card-title">操作员偏好</h3>
+              <p class="app-card-subtitle">这些偏好由操作员确认后注入 agent 上下文，并写入 audit。</p>
+            </div>
+          </div>
+          <form id="settings-operator-form" class="app-card-body">
+            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              <label class="block">
+                <span class="font-label text-label text-on-surface block mb-2">审批严格度</span>
+                <select id="settings-operator-strictness-input" class="w-full min-h-[48px] rounded-[14px] border border-surface-variant bg-surface px-4 text-on-surface">
+                  <option value="standard">standard</option>
+                  <option value="strict">strict</option>
+                  <option value="permissive">permissive</option>
+                </select>
+              </label>
+              <label class="flex min-h-[48px] items-center gap-3 rounded-[14px] border border-surface-variant bg-surface px-4 py-3">
+                <input id="settings-operator-readonly-input" type="checkbox">
+                <span class="font-body-sm text-body-sm text-on-surface-variant">优先只读诊断</span>
+              </label>
+              <label class="flex min-h-[48px] items-center gap-3 rounded-[14px] border border-surface-variant bg-surface px-4 py-3">
+                <input id="settings-operator-force-input" type="checkbox">
+                <span class="font-body-sm text-body-sm text-on-surface-variant">允许受控 override</span>
+              </label>
+              <label class="flex min-h-[48px] items-center gap-3 rounded-[14px] border border-surface-variant bg-surface px-4 py-3">
+                <input id="settings-operator-bypass-input" type="checkbox">
+                <span class="font-body-sm text-body-sm text-on-surface-variant">允许人工选择 bypass</span>
+              </label>
+              <label class="flex min-h-[48px] items-center gap-3 rounded-[14px] border border-surface-variant bg-surface px-4 py-3">
+                <input id="settings-operator-plaintext-ssh-input" type="checkbox">
+                <span class="font-body-sm text-body-sm text-on-surface-variant">允许明文 SSH 警告模式</span>
+              </label>
+              <label class="flex min-h-[48px] items-center gap-3 rounded-[14px] border border-surface-variant bg-surface px-4 py-3">
+                <input id="settings-operator-automation-bypass-input" type="checkbox">
+                <span class="font-body-sm text-body-sm text-on-surface-variant">允许自动化 bypass</span>
+              </label>
+              <label class="flex min-h-[48px] items-center gap-3 rounded-[14px] border border-surface-variant bg-surface px-4 py-3">
+                <input id="settings-operator-remote-validation-input" type="checkbox">
+                <span class="font-body-sm text-body-sm text-on-surface-variant">要求远端验证</span>
+              </label>
+            </div>
+            <div class="mt-5 flex items-center gap-3">
+              <button class="app-primary-button app-primary-button--inline" type="submit">
+                <span class="material-symbols-outlined text-[18px]">save</span>
+                <span>保存偏好</span>
+              </button>
+              <span id="settings-operator-message" class="font-body-sm text-body-sm text-on-surface-variant">偏好会影响后续 agent 上下文。</span>
+            </div>
+          </form>
+        </section>
+
+        <section class="app-card bg-surface-container-lowest border border-surface-variant flex flex-col gap-lg md:col-span-2">
+          <div class="app-card-head">
+            <div>
+              <h3 class="app-card-title">记忆、偏好与 SOP</h3>
+              <p class="app-card-subtitle">维护经确认的长期记忆、AI 偏好、SOP 和历史案例；pending 候选不会默认注入 agent。</p>
+            </div>
+            <button id="settings-knowledge-new" class="app-button-secondary" type="button">
+              <span class="material-symbols-outlined text-[18px]">add_notes</span>
+              <span>新增知识</span>
+            </button>
+          </div>
+          <div class="app-card-body">
+            <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-6">
+              <div id="settings-knowledge-list" class="space-y-3"></div>
+              <form id="settings-knowledge-form" class="space-y-4 rounded-[18px] border border-surface-variant/60 bg-surface p-4">
+                <input id="settings-knowledge-id" type="hidden">
+                <div class="grid grid-cols-2 gap-3">
+                  <label class="block">
+                    <span class="font-label text-label text-on-surface block mb-2">类型</span>
+                    <select id="settings-knowledge-kind" class="w-full min-h-[44px] rounded-[14px] border border-surface-variant bg-surface px-3 text-on-surface">
+                      <option value="memory">memory</option>
+                      <option value="preference">preference</option>
+                      <option value="sop">sop</option>
+                      <option value="incident">incident</option>
+                    </select>
+                  </label>
+                  <label class="block">
+                    <span class="font-label text-label text-on-surface block mb-2">状态</span>
+                    <select id="settings-knowledge-status" class="w-full min-h-[44px] rounded-[14px] border border-surface-variant bg-surface px-3 text-on-surface">
+                      <option value="pending">pending</option>
+                      <option value="active">active</option>
+                    </select>
+                  </label>
+                </div>
+                <label class="block">
+                  <span class="font-label text-label text-on-surface block mb-2">适用范围</span>
+                  <input id="settings-knowledge-scope" class="w-full min-h-[44px] rounded-[14px] border border-surface-variant bg-surface px-3 text-on-surface font-mono" placeholder="global 或 host id" type="text">
+                </label>
+                <label class="block">
+                  <span class="font-label text-label text-on-surface block mb-2">标题</span>
+                  <input id="settings-knowledge-title" class="w-full min-h-[44px] rounded-[14px] border border-surface-variant bg-surface px-3 text-on-surface" type="text">
+                </label>
+                <label class="block">
+                  <span class="font-label text-label text-on-surface block mb-2">内容</span>
+                  <textarea id="settings-knowledge-body" class="w-full min-h-[160px] rounded-[14px] border border-surface-variant bg-surface px-3 py-3 text-on-surface resize-y"></textarea>
+                </label>
+                <label class="block">
+                  <span class="font-label text-label text-on-surface block mb-2">标签</span>
+                  <input id="settings-knowledge-tags" class="w-full min-h-[44px] rounded-[14px] border border-surface-variant bg-surface px-3 text-on-surface" placeholder="disk,df,sop" type="text">
+                </label>
+                <div class="flex flex-wrap items-center gap-3">
+                  <button class="app-primary-button app-primary-button--inline" type="submit">
+                    <span class="material-symbols-outlined text-[18px]">save</span>
+                    <span>保存知识</span>
+                  </button>
+                  <span id="settings-knowledge-message" class="font-body-sm text-body-sm text-on-surface-variant">active 知识会进入后续检索。</span>
+                </div>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        <section class="app-card bg-surface-container-lowest border border-surface-variant flex flex-col gap-lg md:col-span-2">
+          <div class="app-card-head">
+            <div>
+              <h3 class="app-card-title">安全规则</h3>
+              <p class="app-card-subtitle">编辑 shell 命令安全规则资产；受保护 deny 规则不能被放宽。</p>
+            </div>
+          </div>
+          <form id="settings-policy-form" class="app-card-body">
+            <div id="settings-policy-list" class="space-y-3"></div>
+            <div class="mt-5 flex items-center gap-3">
+              <button class="app-primary-button app-primary-button--inline" type="submit">
+                <span class="material-symbols-outlined text-[18px]">policy</span>
+                <span>保存规则</span>
+              </button>
+              <span id="settings-policy-message" class="font-body-sm text-body-sm text-on-surface-variant">规则 ID 会显示在审批、事件和 audit 路径中。</span>
+            </div>
+          </form>
         </section>
       </div>
     </section>
