@@ -9,6 +9,7 @@ REMOTE_PORT="${REMOTE_PORT:-7778}"
 REMOTE_ADDR=":${REMOTE_PORT}"
 REMOTE_SSH_OPTS="${REMOTE_SSH_OPTS:-}"
 GIT_REMOTE_URL="${GIT_REMOTE_URL:-$(git remote get-url origin)}"
+REMOTE_GIT_HTTP_PROXY="${REMOTE_GIT_HTTP_PROXY:-}"
 
 OSAGENT_LLM_BASE_URL="${OSAGENT_LLM_BASE_URL:-https://api.hbyzn.cn}"
 OSAGENT_LLM_MODEL="${OSAGENT_LLM_MODEL:-qwen3.6-plus}"
@@ -31,16 +32,23 @@ export PATH=/usr/local/go/bin:\$PATH
 export LANG=C
 export LC_ALL=C
 export GOPROXY='${REMOTE_GOPROXY}'
+git_remote() {
+  if [ -n '${REMOTE_GIT_HTTP_PROXY}' ]; then
+    git -c http.proxy='${REMOTE_GIT_HTTP_PROXY}' -c https.proxy='${REMOTE_GIT_HTTP_PROXY}' \"\$@\"
+    return
+  fi
+  git \"\$@\"
+}
 if ! command -v git >/dev/null 2>&1; then echo 'git missing on remote' >&2; exit 20; fi
 if ! command -v go >/dev/null 2>&1; then echo 'go missing on remote' >&2; exit 21; fi
 mkdir -p '${REMOTE_DIR}'
 if [ ! -d '${REMOTE_DIR}/.git' ]; then
-  git clone '${GIT_REMOTE_URL}' '${REMOTE_DIR}'
+  git_remote clone '${GIT_REMOTE_URL}' '${REMOTE_DIR}'
 fi
 cd '${REMOTE_DIR}'
-git fetch origin '${REMOTE_BRANCH}'
-git checkout '${REMOTE_BRANCH}'
-git reset --hard FETCH_HEAD
+git_remote fetch origin '${REMOTE_BRANCH}'
+git_remote checkout '${REMOTE_BRANCH}'
+git_remote reset --hard FETCH_HEAD
 if ss -ltn 2>/dev/null | awk '{print \$4}' | grep -qE '(^|:)${REMOTE_PORT}$'; then
   echo 'remote port ${REMOTE_PORT} is already occupied' >&2
   exit 22

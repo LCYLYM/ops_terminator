@@ -18,6 +18,13 @@ export OSAGENT_EMBEDDING_MODEL=text-embedding-3-small
 export OSAGENT_LLM_API_KEY=<runtime-secret>
 ```
 
+如果远端直连 GitHub 超时，可先建立 SSH 反向隧道，把远端代理指向本机代理：
+
+```bash
+ssh -N -R 127.0.0.1:18080:127.0.0.1:8080 root@<remote-host>
+export REMOTE_GIT_HTTP_PROXY=http://127.0.0.1:18080
+```
+
 API key、SSH 密码和其他凭据不得写入 git、README、PR 描述或测试日志摘要。
 
 ## 2. 固定流程
