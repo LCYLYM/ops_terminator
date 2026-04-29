@@ -16,6 +16,11 @@ OSAGENT_EMBEDDING_MODEL="${OSAGENT_EMBEDDING_MODEL:-text-embedding-3-small}"
 OSAGENT_LLM_API_KEY="${OSAGENT_LLM_API_KEY:?OSAGENT_LLM_API_KEY is required}"
 
 ssh_remote() {
+  if [ -n "${SSHPASS:-}" ]; then
+    # shellcheck disable=SC2086
+    sshpass -e ssh ${REMOTE_SSH_OPTS} "${REMOTE_USER}@${REMOTE_HOST}" "$@"
+    return
+  fi
   # shellcheck disable=SC2086
   ssh ${REMOTE_SSH_OPTS} "${REMOTE_USER}@${REMOTE_HOST}" "$@"
 }
