@@ -30,6 +30,7 @@ type Service struct {
 	logger    *log.Logger
 	llmClient GatewayClient
 	executor  *runner.Executor
+	policy    *policy.Engine
 
 	settingsMu    sync.RWMutex
 	gatewayConfig models.GatewayConfig
@@ -58,6 +59,12 @@ type RunRequest struct {
 	BypassApprovals *bool  `json:"bypass_approvals,omitempty"`
 }
 
+type SessionDetailOptions struct {
+	TurnLimit  int
+	EventLimit int
+	Compact    bool
+}
+
 func NewService(store store.Store, hub *events.Hub, builder *contextbuilder.Builder, runtime Runtime, logger *log.Logger) *Service {
 	return &Service{store: store, hub: hub, builder: builder, runtime: runtime, logger: logger}
 }
@@ -76,6 +83,10 @@ func (s *Service) SetLLMClient(client GatewayClient) {
 
 func (s *Service) SetExecutor(executor *runner.Executor) {
 	s.executor = executor
+}
+
+func (s *Service) SetPolicyEngine(engine *policy.Engine) {
+	s.policy = engine
 }
 
 func (s *Service) SetGatewayConfig(config models.GatewayConfig) {
@@ -127,7 +138,7 @@ func (s *Service) HealthSnapshot() (models.GatewayHealth, error) {
 		BaseURL:          activePreset.BaseURL,
 		Model:            activePreset.Model,
 		EmbeddingModel:   embeddingModel,
-		PolicySummary:    policy.New().Summary(),
+		PolicySummary:    s.policySummary(),
 		TotalHosts:       len(state.hosts),
 		TotalSessions:    len(state.sessions),
 		TotalRuns:        len(state.runs),
@@ -135,6 +146,13 @@ func (s *Service) HealthSnapshot() (models.GatewayHealth, error) {
 		PendingApprovals: state.pendingApprovalCount,
 		Capabilities:     buildCapabilityViews(state),
 	}, nil
+}
+
+func (s *Service) policySummary() string {
+	if s.policy != nil {
+		return s.policy.Summary()
+	}
+	return policy.New().Summary()
 }
 
 func (s *Service) GatewayConfigView() models.GatewayConfigView {
@@ -674,16 +692,16 @@ func (s *Service) ResolveApproval(id, decision, actor string) (models.Run, error
 }
 
 func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error) {
+	return s.GetSessionDetailWithOptions(id, SessionDetailOptions{})
+}
+
+func (s *Service) GetSessionDetailWithOptions(id string, options SessionDetailOptions) (models.SessionDetail, bool, error) {
 	session, found, err := s.store.GetSession(id)
 	if err != nil || !found {
 		return models.SessionDetail{}, found, err
 	}
 	host, found, err := s.store.GetHost(session.HostID)
 	if err != nil || !found {
-		return models.SessionDetail{}, false, err
-	}
-	allTurns, err := s.store.ListTurns()
-	if err != nil {
 		return models.SessionDetail{}, false, err
 	}
 	allApprovals, err := s.store.ListApprovals()
@@ -693,16 +711,38 @@ func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error
 
 	approvalsByRun := make(map[string][]models.Approval)
 	pendingApprovals := make([]models.Approval, 0)
+	sessionRunIDs := make(map[string]bool, len(session.RunIDs))
+	for _, runID := range session.RunIDs {
+		sessionRunIDs[runID] = true
+	}
 	for _, approval := range allApprovals {
+		if !sessionRunIDs[approval.RunID] {
+			continue
+		}
 		approvalsByRun[approval.RunID] = append(approvalsByRun[approval.RunID], approval)
-		if approval.Decision == "" && contains(session.RunIDs, approval.RunID) {
+		if approval.Decision == "" {
 			pendingApprovals = append(pendingApprovals, approval)
 		}
 	}
 
-	items := make([]models.TurnHistoryItem, 0, len(session.TurnIDs))
-	for _, turn := range allTurns {
-		if turn.SessionID != session.ID {
+	turnIDs := limitedTail(session.TurnIDs, options.TurnLimit)
+	items := make([]models.TurnHistoryItem, 0, len(turnIDs))
+	runsByID := make(map[string]models.Run, len(session.RunIDs))
+	for _, runID := range session.RunIDs {
+		run, found, err := s.store.GetRun(runID)
+		if err != nil {
+			return models.SessionDetail{}, false, err
+		}
+		if found {
+			runsByID[runID] = run
+		}
+	}
+	for _, turnID := range turnIDs {
+		turn, found, err := s.store.GetTurn(turnID)
+		if err != nil {
+			return models.SessionDetail{}, false, err
+		}
+		if !found || turn.SessionID != session.ID {
 			continue
 		}
 		run, _, err := s.store.GetRun(turn.RunID)
@@ -713,7 +753,8 @@ func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error
 		if err != nil {
 			return models.SessionDetail{}, false, err
 		}
-		items = append(items, models.TurnHistoryItem{
+		runEvents = limitedTail(runEvents, options.EventLimit)
+		item := models.TurnHistoryItem{
 			Turn:            turn,
 			Run:             run,
 			Events:          runEvents,
@@ -723,7 +764,11 @@ func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error
 			ConsoleOutput:   collectToolResultOutput(turn.ToolResults, runEvents),
 			LastEventAt:     latestEventTimestamp(runEvents),
 			WaitingApproval: hasPendingApproval(approvalsByRun[turn.RunID]),
-		})
+		}
+		if options.Compact {
+			item = compactTurnHistoryItem(item)
+		}
+		items = append(items, item)
 	}
 
 	sort.Slice(items, func(i, j int) bool {
@@ -739,7 +784,7 @@ func (s *Service) GetSessionDetail(id string) (models.SessionDetail, bool, error
 		Memory:           session.Memory,
 		Turns:            items,
 		PendingApprovals: pendingApprovals,
-		PendingBatches:   buildPendingApprovalBatches(session.RunIDs, allApprovals, statefulRunsByID(items)),
+		PendingBatches:   buildPendingApprovalBatches(session.RunIDs, allApprovals, runsByID),
 	}, true, nil
 }
 
@@ -792,6 +837,55 @@ func (s *Service) UpdateOperatorProfile(profile models.OperatorProfile, actor st
 	return profile, nil
 }
 
+func (s *Service) PolicyConfig() (models.PolicyConfig, error) {
+	config, found, err := s.store.GetPolicyConfig()
+	if err != nil {
+		return models.PolicyConfig{}, err
+	}
+	if found && len(config.Rules) > 0 {
+		return normalizePolicyConfig(config)
+	}
+	rules := policy.DefaultRuleConfigs()
+	if s.policy != nil {
+		rules = s.policy.RuleConfigs()
+	}
+	config = models.PolicyConfig{
+		SchemaVersion: "1.0",
+		Rules:         rules,
+		UpdatedAt:     time.Now().UTC(),
+	}
+	if err := s.store.SavePolicyConfig(config); err != nil {
+		return models.PolicyConfig{}, err
+	}
+	return config, nil
+}
+
+func (s *Service) UpdatePolicyConfig(config models.PolicyConfig, actor string) (models.PolicyConfig, error) {
+	config, err := normalizePolicyConfig(config)
+	if err != nil {
+		return models.PolicyConfig{}, err
+	}
+	if s.policy == nil {
+		return models.PolicyConfig{}, fmt.Errorf("policy engine is not configured")
+	}
+	if err := s.policy.UpdateRules(config.Rules); err != nil {
+		return models.PolicyConfig{}, err
+	}
+	config.Rules = s.policy.RuleConfigs()
+	config.UpdatedAt = time.Now().UTC()
+	if err := s.store.SavePolicyConfig(config); err != nil {
+		return models.PolicyConfig{}, err
+	}
+	_ = s.store.AppendAudit(models.AuditEntry{
+		ID:        models.NewID("audit"),
+		Kind:      "policy_config_updated",
+		Summary:   "shell command safety policy updated",
+		Payload:   map[string]any{"actor": firstNonEmpty(actor, "api"), "rule_count": len(config.Rules)},
+		CreatedAt: config.UpdatedAt,
+	})
+	return config, nil
+}
+
 func (s *Service) ListKnowledge() ([]models.KnowledgeItem, error) {
 	items, err := s.store.ListKnowledge()
 	if err != nil {
@@ -821,9 +915,20 @@ func (s *Service) SaveKnowledge(item models.KnowledgeItem) (models.KnowledgeItem
 		item.CreatedAt = now
 	}
 	item.UpdatedAt = now
+	if item.Status == models.KnowledgeStatusActive && item.ApprovedAt == nil {
+		item.ApprovedAt = &now
+		item.ApprovedBy = firstNonEmpty(item.ApprovedBy, "api")
+	}
 	if err := s.store.SaveKnowledge(item); err != nil {
 		return models.KnowledgeItem{}, err
 	}
+	_ = s.store.AppendAudit(models.AuditEntry{
+		ID:        models.NewID("audit"),
+		Kind:      "knowledge_saved",
+		Summary:   item.Title,
+		Payload:   map[string]any{"knowledge_id": item.ID, "kind": item.Kind, "status": item.Status, "scope": item.Scope},
+		CreatedAt: now,
+	})
 	return item, nil
 }
 
@@ -1086,6 +1191,21 @@ func normalizeOperatorProfile(profile models.OperatorProfile) models.OperatorPro
 	return profile
 }
 
+func normalizePolicyConfig(config models.PolicyConfig) (models.PolicyConfig, error) {
+	if strings.TrimSpace(config.SchemaVersion) == "" {
+		config.SchemaVersion = "1.0"
+	}
+	engine := policy.New()
+	if err := engine.UpdateRules(config.Rules); err != nil {
+		return models.PolicyConfig{}, err
+	}
+	config.Rules = engine.RuleConfigs()
+	if config.UpdatedAt.IsZero() {
+		config.UpdatedAt = time.Now().UTC()
+	}
+	return config, nil
+}
+
 func (s *Service) captureKnowledgeCandidate(ctx context.Context, run models.Run, turn models.Turn, execResult models.ExecutionResult) {
 	body := strings.TrimSpace(execResult.FinalResponse)
 	if body == "" {
@@ -1196,6 +1316,50 @@ func statefulRunsByID(items []models.TurnHistoryItem) map[string]models.Run {
 	return result
 }
 
+func limitedTail[T any](items []T, limit int) []T {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[len(items)-limit:]
+}
+
+func compactTurnHistoryItem(item models.TurnHistoryItem) models.TurnHistoryItem {
+	item.Run.FinalResponse = truncateForDetail(item.Run.FinalResponse, 6000)
+	item.Run.FailureMessage = truncateForDetail(item.Run.FailureMessage, 2000)
+	item.ToolEvents = compactEvents(item.ToolEvents, 1200)
+	item.Events = compactEvents(item.Events, 1200)
+	item.ConsoleOutput = truncateForDetail(item.ConsoleOutput, 6000)
+	item.AssistantText = truncateForDetail(item.AssistantText, 6000)
+	item.Turn.FinalExplanation = truncateForDetail(item.Turn.FinalExplanation, 6000)
+	for i := range item.Turn.ToolResults {
+		item.Turn.ToolResults[i].RawResult = truncateForDetail(item.Turn.ToolResults[i].RawResult, 4000)
+		item.Turn.ToolResults[i].ModelResult = truncateForDetail(item.Turn.ToolResults[i].ModelResult, 4000)
+	}
+	for i := range item.Turn.Messages {
+		item.Turn.Messages[i].Content = truncateForDetail(item.Turn.Messages[i].Content, 6000)
+	}
+	return item
+}
+
+func compactEvents(items []models.Event, limit int) []models.Event {
+	result := make([]models.Event, len(items))
+	copy(result, items)
+	for i := range result {
+		result[i].Message = truncateForDetail(result[i].Message, limit)
+	}
+	return result
+}
+
+func truncateForDetail(value string, limit int) string {
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	if limit < 40 {
+		return value[:limit]
+	}
+	return value[:limit-28] + "\n...[truncated for UI]..."
+}
+
 func buildPendingApprovalBatches(sessionRunIDs []string, approvals []models.Approval, runsByID map[string]models.Run) []models.ApprovalBatch {
 	batchesByID := make(map[string]*models.ApprovalBatch)
 	for _, approval := range approvals {
@@ -1296,7 +1460,7 @@ func (s *Service) loadDashboardState() (dashboardState, error) {
 		s.dashboardCacheMu.Lock()
 		if err == nil {
 			s.dashboardCache = state
-			s.dashboardCacheUntil = time.Now().Add(250 * time.Millisecond)
+			s.dashboardCacheUntil = time.Now().Add(2 * time.Second)
 		} else {
 			s.dashboardCacheUntil = time.Time{}
 		}

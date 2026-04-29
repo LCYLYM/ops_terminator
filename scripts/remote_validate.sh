@@ -94,6 +94,7 @@ for i in \$(seq 1 30); do
   sleep 1
 done
 cat /tmp/ops_terminator_health.json
+curl -fsS 'http://127.0.0.1:${REMOTE_PORT}/api/settings/policy' >/tmp/ops_terminator_policy.json
 curl -fsS -X POST 'http://127.0.0.1:${REMOTE_PORT}/api/knowledge' -H 'Content-Type: application/json' -d '{\"kind\":\"sop\",\"status\":\"active\",\"scope\":\"global\",\"title\":\"Disk pressure triage SOP\",\"body\":\"Use df -h and df -i first, then inspect large directories. Do not delete files before confirming impact.\",\"tags\":[\"disk\",\"df\",\"inode\"]}' >/tmp/ops_terminator_sop.json
 RUN_ID=\$(curl -fsS -X POST 'http://127.0.0.1:${REMOTE_PORT}/api/runs' -H 'Content-Type: application/json' -d '{\"host_id\":\"local\",\"user_input\":\"请用只读命令检查磁盘空间，并说明是否命中了磁盘 SOP\",\"requested_by\":\"remote_validation\"}' | sed -n 's/.*\"id\":\"\\([^\"]*\\)\".*/\\1/p')
 if [ -z \"\$RUN_ID\" ]; then echo 'failed to create run' >&2; exit 23; fi
@@ -107,6 +108,8 @@ for i in \$(seq 1 90); do
 done
 curl -fsS \"http://127.0.0.1:${REMOTE_PORT}/api/runs/\$RUN_ID\" >/tmp/ops_terminator_run.json
 curl -fsS \"http://127.0.0.1:${REMOTE_PORT}/api/knowledge\" >/tmp/ops_terminator_knowledge.json
+curl -fsS \"http://127.0.0.1:${REMOTE_PORT}/api/sessions?limit=5\" >/tmp/ops_terminator_sessions_limited.json
+curl -fsS \"http://127.0.0.1:${REMOTE_PORT}/api/sessions/\$(sed -n 's/.*\"session_id\":\"\\([^\"]*\\)\".*/\\1/p' /tmp/ops_terminator_run.json)?turn_limit=5\\&events_limit=20\\&compact=true\" >/tmp/ops_terminator_session_detail_limited.json
 echo \"REMOTE_VALIDATION_RUN_ID=\$RUN_ID\"
 cat /tmp/ops_terminator_run.json
 "

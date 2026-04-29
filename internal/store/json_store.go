@@ -74,6 +74,38 @@ func (s *JSONStore) SaveGatewayConfig(config models.GatewayConfig) error {
 	return os.WriteFile(path, bytes, 0o644)
 }
 
+func (s *JSONStore) GetPolicyConfig() (models.PolicyConfig, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var zero models.PolicyConfig
+	path := filepath.Join(s.root, "policy_config.json")
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return zero, false, nil
+		}
+		return zero, false, fmt.Errorf("read %s: %w", path, err)
+	}
+	var item models.PolicyConfig
+	if err := json.Unmarshal(bytes, &item); err != nil {
+		return zero, false, fmt.Errorf("decode %s: %w", path, err)
+	}
+	return item, true, nil
+}
+
+func (s *JSONStore) SavePolicyConfig(config models.PolicyConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := filepath.Join(s.root, "policy_config.json")
+	bytes, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal policy config: %w", err)
+	}
+	return os.WriteFile(path, bytes, 0o644)
+}
+
 func (s *JSONStore) GetOperatorProfile() (models.OperatorProfile, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

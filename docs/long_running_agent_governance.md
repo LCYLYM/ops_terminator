@@ -14,7 +14,7 @@ Policy Engine 输出统一的规则结果：
 - `safer_alternative`：更安全的替代路径。
 - `override_allowed`：是否允许受控 override。
 
-当前规则资产记录在 `configs/policies/shell_command_safety.json`。运行时仍由 Go 代码执行解析和判定，避免把安全边界交给模型自由解释。审批记录、事件流、audit 和前端卡片必须携带规则 ID。
+默认规则资产记录在 `configs/policies/shell_command_safety.json`，首次启动后会落到运行时数据目录的 `policy_config.json`，并可通过系统设置页和 `/api/settings/policy` 编辑。运行时仍由 Go 代码执行解析和判定，避免把安全边界交给模型自由解释；受保护的 deny 规则不能在 UI/API 中放宽。审批记录、事件流、audit 和前端卡片必须携带规则 ID。
 
 第一批规则覆盖：
 

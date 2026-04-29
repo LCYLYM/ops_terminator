@@ -44,9 +44,10 @@ bash scripts/remote_validate.sh
 6. 写入 `ops-terminator-test.service`。
 7. 重启 systemd 服务。
 8. 调用 `/api/health`。
-9. 创建 active SOP。
-10. 发起真实 agent run。
-11. 拉取 run 和 knowledge 结果。
+9. 调用 `/api/settings/policy` 验证安全规则资产可读。
+10. 创建 active SOP。
+11. 发起真实 agent run。
+12. 拉取 run、knowledge 和限量 session detail 结果。
 
 远端端口固定为 `:7778`。如果端口被占用，验证失败并退出，不能自动换端口。
 

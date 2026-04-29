@@ -9,6 +9,8 @@ type Store interface {
 
 	GetGatewayConfig() (models.GatewayConfig, bool, error)
 	SaveGatewayConfig(config models.GatewayConfig) error
+	GetPolicyConfig() (models.PolicyConfig, bool, error)
+	SavePolicyConfig(config models.PolicyConfig) error
 	GetOperatorProfile() (models.OperatorProfile, bool, error)
 	SaveOperatorProfile(profile models.OperatorProfile) error
 

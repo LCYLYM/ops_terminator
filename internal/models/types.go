@@ -480,6 +480,24 @@ type PolicyRule struct {
 	OverrideAllowed  bool   `json:"override_allowed,omitempty"`
 }
 
+type PolicyRuleConfig struct {
+	ID               string    `json:"id"`
+	Category         string    `json:"category"`
+	Severity         string    `json:"severity"`
+	Decision         string    `json:"decision"`
+	Reason           string    `json:"reason,omitempty"`
+	SaferAlternative string    `json:"safer_alternative,omitempty"`
+	OverrideAllowed  bool      `json:"override_allowed"`
+	Description      string    `json:"description,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"`
+}
+
+type PolicyConfig struct {
+	SchemaVersion string             `json:"schema_version"`
+	Rules         []PolicyRuleConfig `json:"rules"`
+	UpdatedAt     time.Time          `json:"updated_at,omitempty"`
+}
+
 type TurnHistoryItem struct {
 	Turn            Turn       `json:"turn"`
 	Run             Run        `json:"run"`

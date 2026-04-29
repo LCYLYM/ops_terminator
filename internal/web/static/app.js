@@ -45,6 +45,8 @@ const state = {
   health: null,
   gatewaySettings: null,
   operatorProfile: null,
+  policyConfig: null,
+  knowledge: [],
   hosts: [],
   runs: [],
   approvals: [],
@@ -61,15 +63,19 @@ const state = {
   streamConnected: false,
   refreshTimer: null,
   refreshInFlight: null,
+  sessionDetailRequest: null,
+  sessionDetailLoadingId: "",
   refreshDetail: false,
   chatApprovalExpandedOverride: null,
   chatApprovalLastPendingCount: 0,
 };
 
 async function request(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers,
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText }));
@@ -304,24 +310,44 @@ function syncSelectedHost() {
 }
 
 async function loadCore() {
-  const [health, gatewaySettings, operatorProfile, hosts, runs, approvals, sessions, automations] = await Promise.all([
+  const [health, gatewaySettings, operatorProfile] = await Promise.all([
     request("/api/health"),
     request("/api/settings/gateway"),
     request("/api/settings/operator"),
-    request("/api/hosts"),
-    request("/api/runs"),
-    request("/api/approvals"),
-    request("/api/sessions"),
-    request("/api/automations"),
   ]);
   state.health = health;
   state.gatewaySettings = gatewaySettings;
   state.operatorProfile = operatorProfile;
-  state.hosts = sortByNewest(hosts.items || [], "updated_at");
-  state.runs = sortByNewest(runs.items || [], "updated_at");
-  state.approvals = sortByNewest(approvals.items || [], "created_at");
-  state.sessions = sortByNewest(sessions.items || [], "updated_at");
-  state.automations = sortByNewest(automations.items || [], "updated_at");
+
+  if (page === "settings") {
+    const [knowledge, policyConfig] = await Promise.all([
+      request("/api/knowledge"),
+      request("/api/settings/policy"),
+    ]);
+    state.knowledge = sortByNewest(knowledge.items || [], "updated_at");
+    state.policyConfig = policyConfig;
+  }
+
+  if (["chat", "assets", "automation"].includes(page)) {
+    const hosts = await request("/api/hosts");
+    state.hosts = sortByNewest(hosts.items || [], "updated_at");
+  }
+  if (["chat", "history", "assets"].includes(page)) {
+    const sessions = await request("/api/sessions?limit=160");
+    state.sessions = sortByNewest(sessions.items || [], "updated_at");
+  }
+  if (["history", "assets"].includes(page)) {
+    const runs = await request("/api/runs?limit=240");
+    state.runs = sortByNewest(runs.items || [], "updated_at");
+  }
+  if (["chat", "assets"].includes(page)) {
+    const approvals = await request("/api/approvals?pending=true&limit=120");
+    state.approvals = sortByNewest(approvals.items || [], "created_at");
+  }
+  if (page === "automation") {
+    const automations = await request("/api/automations");
+    state.automations = sortByNewest(automations.items || [], "updated_at");
+  }
   if (!state.settingsSelectedPresetId) {
     state.settingsSelectedPresetId = gatewaySettings.current_preset_id || "";
   }
@@ -334,13 +360,35 @@ async function loadSessionDetail(sessionId) {
     state.currentSessionDetail = null;
     return;
   }
-  state.currentSessionDetail = await request(`/api/sessions/${sessionId}`);
+  if (state.sessionDetailRequest) {
+    state.sessionDetailRequest.abort();
+  }
+  const controller = new AbortController();
+  state.sessionDetailRequest = controller;
+  state.sessionDetailLoadingId = sessionId;
+  let detail = null;
+  try {
+    detail = await request(`/api/sessions/${sessionId}?turn_limit=40&events_limit=120&compact=true`, {
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error.name === "AbortError") return null;
+    throw error;
+  } finally {
+    if (state.sessionDetailRequest === controller) {
+      state.sessionDetailRequest = null;
+      state.sessionDetailLoadingId = "";
+    }
+  }
+  if (!detail || controller.signal.aborted) return null;
+  state.currentSessionDetail = detail;
   state.currentSessionId = sessionId;
   state.selectedHostId = state.currentSessionDetail?.host?.id || state.selectedHostId;
   state.chatComposerBypass = Boolean(state.currentSessionDetail?.session?.mode?.bypass_approvals ?? runtimeSettingsWithDefaults().bypass_approvals);
   const url = new URL(window.location.href);
   url.searchParams.set("session", sessionId);
   window.history.replaceState({}, "", url.toString());
+  return detail;
 }
 
 function getDefaultHostId() {
@@ -411,7 +459,7 @@ function connectGlobalEvents() {
     }
 
     if (REFRESH_EVENT_TYPES.has(event.type)) {
-      scheduleRefresh({ detail: affectsCurrentSession || page === "chat" });
+      scheduleRefresh({ detail: affectsCurrentSession });
       return;
     }
 
@@ -425,7 +473,10 @@ function bindGlobalNavigationCleanup() {
   if (document.body.dataset.navigationCleanupBound) return;
   document.body.dataset.navigationCleanupBound = "true";
 
-  const cleanup = () => disconnectGlobalEvents();
+  const cleanup = () => {
+    disconnectGlobalEvents();
+    if (state.sessionDetailRequest) state.sessionDetailRequest.abort();
+  };
   window.addEventListener("pagehide", cleanup);
   window.addEventListener("beforeunload", cleanup);
   document.addEventListener("click", (event) => {
@@ -555,6 +606,10 @@ function renderSessionList() {
       </div>
     `;
     item.addEventListener("click", async () => {
+      if (session.id === state.currentSessionId && state.currentSessionDetail) return;
+      state.currentSessionId = session.id;
+      state.currentSessionDetail = null;
+      renderChat();
       await loadSessionDetail(session.id);
       renderChat();
     });
@@ -888,6 +943,17 @@ function renderChat() {
   chatHistory.innerHTML = "";
 
   if (!state.currentSessionDetail?.turns?.length) {
+    if (state.currentSessionId || state.sessionDetailLoadingId) {
+      chatHistory.innerHTML = `
+        <div class="app-empty-chat">
+          <div class="app-empty-chat-icon">
+            <span class="material-symbols-outlined">hourglass_top</span>
+          </div>
+          <h3>正在加载会话历史</h3>
+          <p>只拉取最近 40 个 turn 和压缩后的事件输出，避免历史文件拖慢切换。</p>
+        </div>`;
+      return;
+    }
     chatHistory.innerHTML = `
       <div class="app-empty-chat">
         <div class="app-empty-chat-icon">
@@ -1500,6 +1566,187 @@ function renderAutomationForm() {
   form.dataset.initialized = "true";
 }
 
+function renderKnowledgeSettings(list, form, newButton, message) {
+  const items = state.knowledge || [];
+  list.innerHTML = "";
+  if (items.length === 0) {
+    list.innerHTML = `<div class="app-empty-state">当前没有长期知识。真实 run 完成后会生成 pending 候选，也可以手动新增 SOP。</div>`;
+  }
+  items.forEach((item) => {
+    const node = document.createElement("button");
+    node.type = "button";
+    node.className = "w-full rounded-[18px] border border-surface-variant/60 bg-surface px-4 py-4 text-left hover:bg-surface-container-low";
+    node.innerHTML = `
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="min-w-0">
+          <div class="font-label text-label text-on-surface">${escapeHTML(item.title || item.id)}</div>
+          <div class="mt-1 text-xs text-secondary break-all">${escapeHTML(item.id)} · ${escapeHTML(item.scope || "global")}</div>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <span class="rounded-full bg-[#E3F1ED] px-2 py-0.5 text-[11px] text-[#00796B]">${escapeHTML(item.kind || "memory")}</span>
+          <span class="rounded-full ${item.status === "active" ? "bg-[#E3F1ED] text-[#00796B]" : "bg-[#FFF5D6] text-[#8A5A00]"} px-2 py-0.5 text-[11px]">${escapeHTML(item.status || "pending")}</span>
+        </div>
+      </div>
+      <div class="mt-3 text-sm text-on-surface-variant">${escapeHTML(truncateText(item.body, 220))}</div>
+      <div class="mt-2 text-[11px] text-secondary">source ${escapeHTML(item.source_run_id || item.source_sop_id || "manual")} · embedding ${escapeHTML(item.embedding_status || "not_requested")}</div>
+    `;
+    node.addEventListener("click", () => populateKnowledgeForm(item));
+    list.appendChild(node);
+  });
+
+  if (!newButton.dataset.bound) {
+    newButton.dataset.bound = "true";
+    newButton.addEventListener("click", () => {
+      populateKnowledgeForm(null);
+      message.textContent = "正在新增知识。保存为 active 后才会进入后续检索。";
+    });
+  }
+
+  if (!form.dataset.bound) {
+    form.dataset.bound = "true";
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        message.textContent = "正在保存知识...";
+        const id = document.getElementById("settings-knowledge-id").value.trim();
+        const saved = await request("/api/knowledge", {
+          method: "POST",
+          body: JSON.stringify({
+            id,
+            kind: document.getElementById("settings-knowledge-kind").value,
+            status: document.getElementById("settings-knowledge-status").value,
+            scope: document.getElementById("settings-knowledge-scope").value.trim() || "global",
+            title: document.getElementById("settings-knowledge-title").value.trim(),
+            body: document.getElementById("settings-knowledge-body").value.trim(),
+            tags: splitTags(document.getElementById("settings-knowledge-tags").value),
+          }),
+        });
+        const index = state.knowledge.findIndex((item) => item.id === saved.id);
+        if (index >= 0) state.knowledge[index] = saved;
+        else state.knowledge.unshift(saved);
+        populateKnowledgeForm(saved);
+        message.textContent = `已保存：${saved.id}`;
+        renderSettings();
+      } catch (error) {
+        message.textContent = `保存失败：${error.message}`;
+      }
+    });
+  }
+
+  if (!form.dataset.initialized) {
+    populateKnowledgeForm(items[0] || null);
+    form.dataset.initialized = "true";
+  }
+}
+
+function populateKnowledgeForm(item) {
+  document.getElementById("settings-knowledge-id").value = item?.id || "";
+  document.getElementById("settings-knowledge-kind").value = item?.kind || "sop";
+  document.getElementById("settings-knowledge-status").value = item?.status || "pending";
+  document.getElementById("settings-knowledge-scope").value = item?.scope || "global";
+  document.getElementById("settings-knowledge-title").value = item?.title || "";
+  document.getElementById("settings-knowledge-body").value = item?.body || "";
+  document.getElementById("settings-knowledge-tags").value = (item?.tags || []).join(", ");
+}
+
+function renderPolicySettings(list, form, message) {
+  const rules = state.policyConfig?.rules || [];
+  list.innerHTML = "";
+  if (rules.length === 0) {
+    list.innerHTML = `<div class="app-empty-state">当前没有安全规则配置。</div>`;
+  }
+  rules.forEach((rule) => {
+    const node = document.createElement("div");
+    node.className = "rounded-[18px] border border-surface-variant/60 bg-surface p-4";
+    node.dataset.ruleId = rule.id;
+    node.innerHTML = `
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <div class="font-label text-label text-on-surface">${escapeHTML(rule.id)}</div>
+          <div class="mt-1 text-xs text-secondary">${escapeHTML(rule.description || "")}</div>
+        </div>
+        <div class="grid grid-cols-3 gap-2">
+          <select data-field="decision" class="min-h-[36px] rounded-[12px] border border-surface-variant bg-surface px-2 text-xs">
+            <option value="allow">allow</option>
+            <option value="ask">ask</option>
+            <option value="deny">deny</option>
+          </select>
+          <select data-field="severity" class="min-h-[36px] rounded-[12px] border border-surface-variant bg-surface px-2 text-xs">
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="critical">critical</option>
+          </select>
+          <label class="flex min-h-[36px] items-center gap-2 rounded-[12px] border border-surface-variant px-2 text-xs">
+            <input data-field="override_allowed" type="checkbox">
+            override
+          </label>
+        </div>
+      </div>
+      <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+        <label class="block">
+          <span class="font-label text-[11px] text-secondary block mb-1">reason</span>
+          <textarea data-field="reason" class="w-full min-h-[74px] rounded-[12px] border border-surface-variant bg-surface px-3 py-2 text-sm"></textarea>
+        </label>
+        <label class="block">
+          <span class="font-label text-[11px] text-secondary block mb-1">safer alternative</span>
+          <textarea data-field="safer_alternative" class="w-full min-h-[74px] rounded-[12px] border border-surface-variant bg-surface px-3 py-2 text-sm"></textarea>
+        </label>
+      </div>
+    `;
+    node.querySelector('[data-field="decision"]').value = rule.decision || "ask";
+    node.querySelector('[data-field="severity"]').value = rule.severity || "medium";
+    node.querySelector('[data-field="override_allowed"]').checked = Boolean(rule.override_allowed);
+    node.querySelector('[data-field="reason"]').value = rule.reason || "";
+    node.querySelector('[data-field="safer_alternative"]').value = rule.safer_alternative || "";
+    if (isProtectedDenyRuleId(rule.id)) {
+      node.querySelector('[data-field="decision"]').disabled = true;
+      node.querySelector('[data-field="override_allowed"]').disabled = true;
+    }
+    list.appendChild(node);
+  });
+
+  if (!form.dataset.bound) {
+    form.dataset.bound = "true";
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        message.textContent = "正在保存安全规则...";
+        const nextRules = [...list.querySelectorAll("[data-rule-id]")].map((node) => {
+          const current = rules.find((rule) => rule.id === node.dataset.ruleId) || {};
+          return {
+            ...current,
+            decision: node.querySelector('[data-field="decision"]').value,
+            severity: node.querySelector('[data-field="severity"]').value,
+            override_allowed: node.querySelector('[data-field="override_allowed"]').checked,
+            reason: node.querySelector('[data-field="reason"]').value.trim(),
+            safer_alternative: node.querySelector('[data-field="safer_alternative"]').value.trim(),
+          };
+        });
+        state.policyConfig = await request("/api/settings/policy", {
+          method: "PUT",
+          body: JSON.stringify({ ...(state.policyConfig || { schema_version: "1.0" }), rules: nextRules }),
+        });
+        message.textContent = "安全规则已保存并同步到运行时。";
+        renderSettings();
+      } catch (error) {
+        message.textContent = `保存失败：${error.message}`;
+      }
+    });
+  }
+}
+
+function splitTags(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function isProtectedDenyRuleId(id) {
+  return ["destructive_command_deny", "remote_download_pipe_shell_deny", "nested_interpreter_deny", "complex_shell_syntax_deny", "empty_shell_deny", "shell_parse_error_deny", "missing_executable_deny"].includes(id);
+}
+
 function renderSettings() {
   const gatewayStatus = document.getElementById("settings-gateway-status");
   const policySummary = document.getElementById("settings-policy-summary");
@@ -1586,10 +1833,17 @@ function renderSettings() {
   const operatorAutomationBypassInput = document.getElementById("settings-operator-automation-bypass-input");
   const operatorRemoteValidationInput = document.getElementById("settings-operator-remote-validation-input");
   const operatorMessage = document.getElementById("settings-operator-message");
+  const knowledgeList = document.getElementById("settings-knowledge-list");
+  const knowledgeForm = document.getElementById("settings-knowledge-form");
+  const knowledgeNewButton = document.getElementById("settings-knowledge-new");
+  const knowledgeMessage = document.getElementById("settings-knowledge-message");
+  const policyForm = document.getElementById("settings-policy-form");
+  const policyList = document.getElementById("settings-policy-list");
+  const policyMessage = document.getElementById("settings-policy-message");
   const activateButton = document.getElementById("settings-activate-preset");
   const deleteButton = document.getElementById("settings-delete-preset");
   const addButton = document.getElementById("settings-add-preset");
-  if (!presetIDInput || !presetNameInput || !presetModelInput || !presetBaseURLInput || !embeddingModelInput || !presetAPIKeyInput || !presetActiveInput || !maxAgentStepsInput || !bypassApprovalsInput || !contextSoftLimitInput || !compressionTriggerInput || !responseReserveInput || !recentFullTurnsInput || !olderUserLedgerInput || !hostProfileTTLInput || !toolResultMaxCharsInput || !toolResultHeadCharsInput || !toolResultTailCharsInput || !sopRetrievalLimitInput || !operatorForm || !operatorStrictnessInput || !operatorReadOnlyInput || !operatorForceInput || !operatorBypassInput || !operatorPlaintextSSHInput || !operatorAutomationBypassInput || !operatorRemoteValidationInput || !operatorMessage || !activateButton || !deleteButton || !addButton) {
+  if (!presetIDInput || !presetNameInput || !presetModelInput || !presetBaseURLInput || !embeddingModelInput || !presetAPIKeyInput || !presetActiveInput || !maxAgentStepsInput || !bypassApprovalsInput || !contextSoftLimitInput || !compressionTriggerInput || !responseReserveInput || !recentFullTurnsInput || !olderUserLedgerInput || !hostProfileTTLInput || !toolResultMaxCharsInput || !toolResultHeadCharsInput || !toolResultTailCharsInput || !sopRetrievalLimitInput || !operatorForm || !operatorStrictnessInput || !operatorReadOnlyInput || !operatorForceInput || !operatorBypassInput || !operatorPlaintextSSHInput || !operatorAutomationBypassInput || !operatorRemoteValidationInput || !operatorMessage || !knowledgeList || !knowledgeForm || !knowledgeNewButton || !knowledgeMessage || !policyForm || !policyList || !policyMessage || !activateButton || !deleteButton || !addButton) {
     return;
   }
 
@@ -1780,6 +2034,9 @@ function renderSettings() {
       }
     });
   }
+
+  renderKnowledgeSettings(knowledgeList, knowledgeForm, knowledgeNewButton, knowledgeMessage);
+  renderPolicySettings(policyList, policyForm, policyMessage);
 
   const capabilities = state.health?.capabilities || [];
   box.innerHTML = "";

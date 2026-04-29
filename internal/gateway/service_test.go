@@ -132,6 +132,55 @@ func TestOperatorProfileDefaultsAndAudit(t *testing.T) {
 	}
 }
 
+func TestPolicyConfigUpdateProtectsDenyRules(t *testing.T) {
+	storeImpl, err := store.NewJSONStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	policyEngine := policy.New()
+	service := NewService(storeImpl, events.NewHub(), nil, nil, log.New(io.Discard, "", 0))
+	service.SetPolicyEngine(policyEngine)
+
+	config, err := service.PolicyConfig()
+	if err != nil {
+		t.Fatalf("policy config: %v", err)
+	}
+	if len(config.Rules) == 0 {
+		t.Fatal("expected default policy rules")
+	}
+	for i := range config.Rules {
+		if config.Rules[i].ID == "mutating_shell_ask" {
+			config.Rules[i].Severity = "critical"
+			config.Rules[i].Reason = "custom approval reason"
+		}
+	}
+	updated, err := service.UpdatePolicyConfig(config, "test")
+	if err != nil {
+		t.Fatalf("update policy config: %v", err)
+	}
+	found := false
+	for _, rule := range updated.Rules {
+		if rule.ID == "mutating_shell_ask" {
+			found = true
+			if rule.Severity != "critical" || rule.Reason != "custom approval reason" {
+				t.Fatalf("unexpected updated rule: %+v", rule)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected mutating_shell_ask rule")
+	}
+
+	for i := range config.Rules {
+		if config.Rules[i].ID == "destructive_command_deny" {
+			config.Rules[i].Decision = models.PolicyDecisionAllow
+		}
+	}
+	if _, err := service.UpdatePolicyConfig(config, "test"); err == nil {
+		t.Fatal("expected protected deny rule relaxation to fail")
+	}
+}
+
 func TestEnsureSessionAppliesBypassOverride(t *testing.T) {
 	storeImpl, err := store.NewJSONStore(t.TempDir())
 	if err != nil {
@@ -146,6 +195,68 @@ func TestEnsureSessionAppliesBypassOverride(t *testing.T) {
 	}
 	if !session.Mode.BypassApprovals {
 		t.Fatal("expected bypass override to be applied to new session")
+	}
+}
+
+func TestSessionDetailOptionsLimitAndCompact(t *testing.T) {
+	storeImpl, err := store.NewJSONStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	service := NewService(storeImpl, events.NewHub(), nil, nil, log.New(io.Discard, "", 0))
+	now := time.Now().UTC()
+	if err := storeImpl.SaveHost(models.Host{ID: "local", DisplayName: "Local", Mode: models.HostModeLocal, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("save host: %v", err)
+	}
+	session := models.Session{ID: "session-1", HostID: "local", Title: "history", CreatedAt: now, UpdatedAt: now}
+	for i := 0; i < 3; i++ {
+		turnID := models.NewID("turn")
+		runID := models.NewID("run")
+		session.TurnIDs = append(session.TurnIDs, turnID)
+		session.RunIDs = append(session.RunIDs, runID)
+		turn := models.Turn{
+			ID:        turnID,
+			RunID:     runID,
+			SessionID: session.ID,
+			HostID:    "local",
+			UserInput: "check",
+			ToolResults: []models.ToolExecutionRecord{{
+				RawResult: strings.Repeat("x", 5000),
+			}},
+			CreatedAt: now.Add(time.Duration(i) * time.Second),
+			UpdatedAt: now.Add(time.Duration(i) * time.Second),
+		}
+		run := models.Run{ID: runID, SessionID: session.ID, TurnID: turnID, HostID: "local", Status: models.RunStatusCompleted, CreatedAt: turn.CreatedAt, UpdatedAt: turn.UpdatedAt}
+		if err := storeImpl.SaveTurn(turn); err != nil {
+			t.Fatalf("save turn: %v", err)
+		}
+		if err := storeImpl.SaveRun(run); err != nil {
+			t.Fatalf("save run: %v", err)
+		}
+		for j := 0; j < 4; j++ {
+			if err := storeImpl.AppendEvent(models.Event{ID: models.NewID("event"), RunID: runID, Type: "run.stdout", Message: strings.Repeat("y", 2000), Timestamp: now}); err != nil {
+				t.Fatalf("append event: %v", err)
+			}
+		}
+	}
+	if err := storeImpl.SaveSession(session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	detail, found, err := service.GetSessionDetailWithOptions(session.ID, SessionDetailOptions{TurnLimit: 2, EventLimit: 2, Compact: true})
+	if err != nil || !found {
+		t.Fatalf("detail found=%v err=%v", found, err)
+	}
+	if len(detail.Turns) != 2 {
+		t.Fatalf("expected 2 turns, got %d", len(detail.Turns))
+	}
+	for _, item := range detail.Turns {
+		if len(item.Events) != 2 {
+			t.Fatalf("expected 2 events, got %d", len(item.Events))
+		}
+		if len(item.Turn.ToolResults[0].RawResult) > 4100 {
+			t.Fatalf("expected compact raw result, got %d chars", len(item.Turn.ToolResults[0].RawResult))
+		}
 	}
 }
 
