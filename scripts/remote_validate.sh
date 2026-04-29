@@ -49,6 +49,7 @@ cd '${REMOTE_DIR}'
 git_remote fetch origin '${REMOTE_BRANCH}'
 git_remote checkout '${REMOTE_BRANCH}'
 git_remote reset --hard FETCH_HEAD
+systemctl stop ops-terminator-test.service >/dev/null 2>&1 || true
 if ss -ltn 2>/dev/null | awk '{print \$4}' | grep -qE '(^|:)${REMOTE_PORT}$'; then
   echo 'remote port ${REMOTE_PORT} is already occupied' >&2
   exit 22
