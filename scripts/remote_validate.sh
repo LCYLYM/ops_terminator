@@ -28,6 +28,8 @@ ssh_remote() {
 
 ssh_remote "set -euo pipefail
 export PATH=/usr/local/go/bin:\$PATH
+export LANG=C
+export LC_ALL=C
 export GOPROXY='${REMOTE_GOPROXY}'
 if ! command -v git >/dev/null 2>&1; then echo 'git missing on remote' >&2; exit 20; fi
 if ! command -v go >/dev/null 2>&1; then echo 'go missing on remote' >&2; exit 21; fi
@@ -38,7 +40,7 @@ fi
 cd '${REMOTE_DIR}'
 git fetch origin '${REMOTE_BRANCH}'
 git checkout '${REMOTE_BRANCH}'
-git reset --hard 'origin/${REMOTE_BRANCH}'
+git reset --hard FETCH_HEAD
 if ss -ltn 2>/dev/null | awk '{print \$4}' | grep -qE '(^|:)${REMOTE_PORT}$'; then
   echo 'remote port ${REMOTE_PORT} is already occupied' >&2
   exit 22
@@ -53,6 +55,8 @@ OSAGENT_DATA_DIR=data
 OSAGENT_REQUEST_TIMEOUT_SECONDS=120
 OSAGENT_RUN_TIMEOUT_SECONDS=180
 OSAGENT_KNOWN_HOSTS=
+LANG=C
+LC_ALL=C
 EOF
 go test ./...
 go build ./...
@@ -65,6 +69,8 @@ After=network.target
 Type=simple
 WorkingDirectory=${REMOTE_DIR}
 EnvironmentFile=${REMOTE_DIR}/.env
+Environment=LANG=C
+Environment=LC_ALL=C
 ExecStart=$(command -v go) run ./cmd/osagent serve
 Restart=on-failure
 RestartSec=3
