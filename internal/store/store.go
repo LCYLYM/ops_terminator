@@ -9,6 +9,8 @@ type Store interface {
 
 	GetGatewayConfig() (models.GatewayConfig, bool, error)
 	SaveGatewayConfig(config models.GatewayConfig) error
+	GetOperatorProfile() (models.OperatorProfile, bool, error)
+	SaveOperatorProfile(profile models.OperatorProfile) error
 
 	ListSessions() ([]models.Session, error)
 	GetSession(id string) (models.Session, bool, error)
@@ -30,6 +32,10 @@ type Store interface {
 	GetAutomation(id string) (models.AutomationRule, bool, error)
 	SaveAutomation(rule models.AutomationRule) error
 	DeleteAutomation(id string) error
+
+	ListKnowledge() ([]models.KnowledgeItem, error)
+	GetKnowledge(id string) (models.KnowledgeItem, bool, error)
+	SaveKnowledge(item models.KnowledgeItem) error
 
 	AppendEvent(event models.Event) error
 	ListEventsByRun(runID string) ([]models.Event, error)

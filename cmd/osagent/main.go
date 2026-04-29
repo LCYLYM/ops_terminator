@@ -229,6 +229,9 @@ func loadGatewayConfig(storeImpl store.Store, cfg config.Config) (models.Gateway
 		return models.GatewayConfig{}, err
 	}
 	if found {
+		if strings.TrimSpace(saved.EmbeddingModel) == "" {
+			saved.EmbeddingModel = strings.TrimSpace(cfg.EmbeddingModel)
+		}
 		return saved, nil
 	}
 	defaultConfig := cfg.DefaultGatewayConfig()

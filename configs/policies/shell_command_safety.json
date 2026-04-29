@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0",
+  "rules": [
+    {
+      "id": "readonly_builtin_allow",
+      "category": "builtin",
+      "severity": "low",
+      "decision": "allow",
+      "override_allowed": false,
+      "description": "Allow explicit read-only builtin tools."
+    },
+    {
+      "id": "mutating_builtin_ask",
+      "category": "builtin",
+      "severity": "high",
+      "decision": "ask",
+      "override_allowed": true,
+      "description": "Require human approval for builtin tools that can change host state."
+    },
+    {
+      "id": "readonly_shell_allow",
+      "category": "shell",
+      "severity": "low",
+      "decision": "allow",
+      "override_allowed": false,
+      "description": "Allow parsed shell commands that only contain explicit read-only diagnostics."
+    },
+    {
+      "id": "mutating_shell_ask",
+      "category": "shell",
+      "severity": "high",
+      "decision": "ask",
+      "override_allowed": true,
+      "description": "Require approval for shell commands that may modify files, services, users, packages, or system state."
+    },
+    {
+      "id": "destructive_command_deny",
+      "category": "shell",
+      "severity": "critical",
+      "decision": "deny",
+      "override_allowed": false,
+      "description": "Reject destructive commands such as filesystem formatting, shutdown, reboot, raw block writes, or broad root deletion."
+    },
+    {
+      "id": "remote_download_pipe_shell_deny",
+      "category": "shell",
+      "severity": "critical",
+      "decision": "deny",
+      "override_allowed": false,
+      "description": "Reject remote download output piped directly into a shell interpreter."
+    },
+    {
+      "id": "nested_interpreter_deny",
+      "category": "shell",
+      "severity": "high",
+      "decision": "deny",
+      "override_allowed": false,
+      "description": "Reject nested shell or scripting interpreter execution through flags such as -c and -e."
+    },
+    {
+      "id": "complex_shell_syntax_deny",
+      "category": "shell",
+      "severity": "high",
+      "decision": "deny",
+      "override_allowed": false,
+      "description": "Reject unsupported shell constructs such as command substitution, here-docs, background execution, or process substitution."
+    }
+  ]
+}

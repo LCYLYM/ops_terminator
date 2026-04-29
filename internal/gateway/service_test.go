@@ -60,14 +60,14 @@ func TestUpsertHostAllowsLiteralPassword(t *testing.T) {
 	host, err := service.UpsertHost(models.Host{
 		ID:          "ssh-1",
 		Mode:        models.HostModeSSH,
-		Address:     "47.116.9.81",
+		Address:     "203.0.113.10",
 		User:        "root",
-		PasswordEnv: "HENUlhzlcy@",
+		PasswordEnv: "plain-text-test-password",
 	})
 	if err != nil {
 		t.Fatalf("upsert host: %v", err)
 	}
-	if host.PasswordEnv != "HENUlhzlcy@" {
+	if host.PasswordEnv != "plain-text-test-password" {
 		t.Fatalf("unexpected password field: %q", host.PasswordEnv)
 	}
 }
@@ -102,6 +102,33 @@ func TestValidateGatewayConfigPreservesBypassApprovals(t *testing.T) {
 	}
 	if validated.RuntimeSettings.ContextSoftLimitTokens != models.DefaultRuntimeSettings().ContextSoftLimitTokens {
 		t.Fatalf("expected runtime defaults to be filled, got %+v", validated.RuntimeSettings)
+	}
+	if validated.EmbeddingModel != "text-embedding-3-small" {
+		t.Fatalf("expected embedding model default, got %q", validated.EmbeddingModel)
+	}
+}
+
+func TestOperatorProfileDefaultsAndAudit(t *testing.T) {
+	storeImpl, err := store.NewJSONStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	service := NewService(storeImpl, events.NewHub(), nil, nil, log.New(io.Discard, "", 0))
+
+	profile, err := service.OperatorProfile()
+	if err != nil {
+		t.Fatalf("operator profile: %v", err)
+	}
+	if !profile.PreferReadOnlyFirst || !profile.RemoteValidationRequired {
+		t.Fatalf("unexpected defaults: %+v", profile)
+	}
+	profile.ApprovalStrictness = "strict"
+	updated, err := service.UpdateOperatorProfile(profile, "test")
+	if err != nil {
+		t.Fatalf("update operator profile: %v", err)
+	}
+	if updated.ApprovalStrictness != "strict" {
+		t.Fatalf("unexpected profile: %+v", updated)
 	}
 }
 

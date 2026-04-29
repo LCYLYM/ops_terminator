@@ -47,3 +47,28 @@ func TestChatCompletionsURL(t *testing.T) {
 		})
 	}
 }
+
+func TestEmbeddingsURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{name: "root base URL", baseURL: "https://api.openai.com", want: "https://api.openai.com/v1/embeddings"},
+		{name: "v1 base URL", baseURL: "https://api.example.com/openai/v1", want: "https://api.example.com/openai/v1/embeddings"},
+		{name: "chat endpoint maps to sibling embeddings endpoint", baseURL: "https://api.example.com/v1/chat/completions", want: "https://api.example.com/v1/embeddings"},
+		{name: "full embeddings endpoint", baseURL: "https://api.example.com/v1/embeddings", want: "https://api.example.com/v1/embeddings"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := embeddingsURL(tt.baseURL); got != tt.want {
+				t.Fatalf("embeddingsURL(%q) = %q, want %q", tt.baseURL, got, tt.want)
+			}
+		})
+	}
+}

@@ -47,6 +47,7 @@ type ApprovalResolver interface {
 type GatewayClient interface {
 	UpdateConfig(baseURL, apiKey, model string)
 	SnapshotConfig() (baseURL, apiKey, model string)
+	EmbedText(context.Context, string, string) ([]float64, error)
 }
 
 type RunRequest struct {
@@ -109,6 +110,9 @@ func (s *Service) HealthSnapshot() (models.GatewayHealth, error) {
 	if err != nil {
 		return models.GatewayHealth{}, err
 	}
+	s.settingsMu.RLock()
+	embeddingModel := strings.TrimSpace(s.gatewayConfig.EmbeddingModel)
+	s.settingsMu.RUnlock()
 	activeRuns := 0
 	for _, run := range state.runs {
 		if isActiveRunStatus(run.Status) {
@@ -122,6 +126,7 @@ func (s *Service) HealthSnapshot() (models.GatewayHealth, error) {
 		PresetName:       activePreset.Name,
 		BaseURL:          activePreset.BaseURL,
 		Model:            activePreset.Model,
+		EmbeddingModel:   embeddingModel,
 		PolicySummary:    policy.New().Summary(),
 		TotalHosts:       len(state.hosts),
 		TotalSessions:    len(state.sessions),
@@ -540,6 +545,16 @@ func (s *Service) CreateRun(ctx context.Context, request RunRequest) (models.Run
 	if !found {
 		return models.Run{}, fmt.Errorf("host not found: %s", request.HostID)
 	}
+	operatorProfile, err := s.OperatorProfile()
+	if err != nil {
+		return models.Run{}, err
+	}
+	if !operatorProfile.AllowBypassApprovals {
+		settings.BypassApprovals = false
+		if request.BypassApprovals != nil && *request.BypassApprovals {
+			return models.Run{}, fmt.Errorf("operator profile does not allow bypass approvals")
+		}
+	}
 	session, err := s.ensureSession(host, request.SessionID, request.UserInput, models.SessionMode{BypassApprovals: settings.BypassApprovals}, request.BypassApprovals)
 	if err != nil {
 		return models.Run{}, err
@@ -548,7 +563,11 @@ func (s *Service) CreateRun(ctx context.Context, request RunRequest) (models.Run
 	if err != nil {
 		return models.Run{}, err
 	}
-	snapshot := s.builder.Build(host, session, request.UserInput)
+	knowledgeMatches, err := s.SelectKnowledge(ctx, request.UserInput, settings.SOPRetrievalLimit)
+	if err != nil {
+		return models.Run{}, err
+	}
+	snapshot := s.builder.Build(host, session, request.UserInput, operatorProfile, knowledgeMatches)
 	now := time.Now().UTC()
 
 	turn := models.Turn{
@@ -741,6 +760,123 @@ func (s *Service) UpdateSessionMode(id string, mode models.SessionMode) (models.
 	return session, nil
 }
 
+func (s *Service) OperatorProfile() (models.OperatorProfile, error) {
+	profile, found, err := s.store.GetOperatorProfile()
+	if err != nil {
+		return models.OperatorProfile{}, err
+	}
+	if !found {
+		profile = models.DefaultOperatorProfile()
+		profile.UpdatedAt = time.Now().UTC()
+		if err := s.store.SaveOperatorProfile(profile); err != nil {
+			return models.OperatorProfile{}, err
+		}
+		return profile, nil
+	}
+	return normalizeOperatorProfile(profile), nil
+}
+
+func (s *Service) UpdateOperatorProfile(profile models.OperatorProfile, actor string) (models.OperatorProfile, error) {
+	profile = normalizeOperatorProfile(profile)
+	profile.UpdatedAt = time.Now().UTC()
+	if err := s.store.SaveOperatorProfile(profile); err != nil {
+		return models.OperatorProfile{}, err
+	}
+	_ = s.store.AppendAudit(models.AuditEntry{
+		ID:        models.NewID("audit"),
+		Kind:      "operator_profile_updated",
+		Summary:   "operator profile updated",
+		Payload:   map[string]any{"actor": firstNonEmpty(actor, "api"), "approval_strictness": profile.ApprovalStrictness, "prefer_read_only_first": profile.PreferReadOnlyFirst},
+		CreatedAt: profile.UpdatedAt,
+	})
+	return profile, nil
+}
+
+func (s *Service) ListKnowledge() ([]models.KnowledgeItem, error) {
+	items, err := s.store.ListKnowledge()
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
+	})
+	return items, nil
+}
+
+func (s *Service) SaveKnowledge(item models.KnowledgeItem) (models.KnowledgeItem, error) {
+	item.ID = strings.TrimSpace(item.ID)
+	if item.ID == "" {
+		item.ID = models.NewID("knowledge")
+	}
+	item.Kind = firstNonEmpty(strings.TrimSpace(item.Kind), models.KnowledgeKindMemory)
+	item.Status = firstNonEmpty(strings.TrimSpace(item.Status), models.KnowledgeStatusPending)
+	item.Scope = firstNonEmpty(strings.TrimSpace(item.Scope), "global")
+	item.Title = strings.TrimSpace(item.Title)
+	item.Body = strings.TrimSpace(item.Body)
+	if item.Title == "" || item.Body == "" {
+		return models.KnowledgeItem{}, fmt.Errorf("knowledge title and body are required")
+	}
+	now := time.Now().UTC()
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = now
+	}
+	item.UpdatedAt = now
+	if err := s.store.SaveKnowledge(item); err != nil {
+		return models.KnowledgeItem{}, err
+	}
+	return item, nil
+}
+
+func (s *Service) SelectKnowledge(ctx context.Context, input string, limit int) ([]models.KnowledgeItem, error) {
+	if limit <= 0 {
+		limit = models.DefaultRuntimeSettings().SOPRetrievalLimit
+	}
+	items, err := s.store.ListKnowledge()
+	if err != nil {
+		return nil, err
+	}
+	type scored struct {
+		score int
+		item  models.KnowledgeItem
+	}
+	tokens := strings.Fields(strings.ToLower(input))
+	var scoredItems []scored
+	for _, item := range items {
+		if item.Status != models.KnowledgeStatusActive && item.Kind != models.KnowledgeKindSOP {
+			continue
+		}
+		text := strings.ToLower(item.Title + " " + item.Body + " " + strings.Join(item.Tags, " "))
+		score := 0
+		for _, token := range tokens {
+			if len(token) > 1 && strings.Contains(text, token) {
+				score++
+			}
+		}
+		if item.Kind == models.KnowledgeKindSOP {
+			score += 1
+		}
+		if score > 0 {
+			scoredItems = append(scoredItems, scored{score: score, item: item})
+		}
+	}
+	sort.SliceStable(scoredItems, func(i, j int) bool {
+		if scoredItems[i].score == scoredItems[j].score {
+			return scoredItems[i].item.UpdatedAt.After(scoredItems[j].item.UpdatedAt)
+		}
+		return scoredItems[i].score > scoredItems[j].score
+	})
+	result := make([]models.KnowledgeItem, 0, limit)
+	for _, entry := range scoredItems {
+		if len(result) >= limit {
+			break
+		}
+		entry.item.Embedding = nil
+		result = append(result, entry.item)
+	}
+	_ = ctx
+	return result, nil
+}
+
 func (s *Service) RecordEvent(event models.Event) error {
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now().UTC()
@@ -790,11 +926,17 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 		return historyTurns[i].CreatedAt.Before(historyTurns[j].CreatedAt)
 	})
 
+	runtimeSettings := mergeRunModeIntoSettings(s.currentRuntimeSettings(), run.Mode)
+	if !turn.ContextSnapshot.OperatorProfile.AllowBypassApprovals {
+		runtimeSettings.BypassApprovals = false
+	}
 	execResult, execErr := s.runtime.Execute(ctx, run, host, models.ConversationContext{
-		Session:         session,
-		CurrentTurn:     turn,
-		HistoricalTurns: historyTurns,
-		RuntimeSettings: mergeRunModeIntoSettings(s.currentRuntimeSettings(), run.Mode),
+		Session:          session,
+		CurrentTurn:      turn,
+		HistoricalTurns:  historyTurns,
+		RuntimeSettings:  runtimeSettings,
+		OperatorProfile:  turn.ContextSnapshot.OperatorProfile,
+		KnowledgeMatches: turn.ContextSnapshot.KnowledgeMatches,
 	})
 	run.ToolHistory = execResult.ToolHistory
 	run.PolicyHistory = execResult.PolicyHistory
@@ -851,6 +993,7 @@ func (s *Service) processRun(ctx context.Context, runID string) {
 		Summary:   execResult.FinalResponse,
 		CreatedAt: now,
 	})
+	s.captureKnowledgeCandidate(ctx, run, turn, execResult)
 	_ = s.RecordEvent(models.Event{
 		ID:        models.NewID("event"),
 		RunID:     run.ID,
@@ -929,6 +1072,83 @@ func validateHost(host models.Host) error {
 	default:
 		return fmt.Errorf("unsupported host mode: %s", host.Mode)
 	}
+}
+
+func normalizeOperatorProfile(profile models.OperatorProfile) models.OperatorProfile {
+	defaults := models.DefaultOperatorProfile()
+	if strings.TrimSpace(profile.ID) == "" {
+		profile.ID = defaults.ID
+	}
+	profile.ApprovalStrictness = strings.TrimSpace(profile.ApprovalStrictness)
+	if profile.ApprovalStrictness == "" {
+		profile.ApprovalStrictness = defaults.ApprovalStrictness
+	}
+	return profile
+}
+
+func (s *Service) captureKnowledgeCandidate(ctx context.Context, run models.Run, turn models.Turn, execResult models.ExecutionResult) {
+	body := strings.TrimSpace(execResult.FinalResponse)
+	if body == "" {
+		return
+	}
+	title := strings.TrimSpace(turn.UserInput)
+	if len(title) > 96 {
+		title = title[:96]
+	}
+	s.settingsMu.RLock()
+	embeddingModel := strings.TrimSpace(s.gatewayConfig.EmbeddingModel)
+	s.settingsMu.RUnlock()
+	item := models.KnowledgeItem{
+		ID:             models.NewID("knowledge"),
+		Kind:           models.KnowledgeKindMemory,
+		Status:         models.KnowledgeStatusPending,
+		Scope:          run.HostID,
+		Title:          title,
+		Body:           body,
+		SourceRunID:    run.ID,
+		SourceTurnID:   turn.ID,
+		Confidence:     0.5,
+		Tags:           []string{"candidate", "run_completed"},
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+		EmbeddingModel: embeddingModel,
+	}
+	if s.llmClient != nil && item.EmbeddingModel != "" {
+		vector, err := s.llmClient.EmbedText(ctx, item.Title+"\n"+item.Body, item.EmbeddingModel)
+		if err != nil {
+			item.EmbeddingStatus = "failed"
+			item.EmbeddingError = err.Error()
+			_ = s.RecordEvent(models.Event{
+				ID:        models.NewID("event"),
+				RunID:     run.ID,
+				Type:      "knowledge.embedding_failed",
+				Message:   err.Error(),
+				Payload:   map[string]any{"knowledge_id": item.ID, "embedding_model": item.EmbeddingModel},
+				Timestamp: time.Now().UTC(),
+			})
+		} else {
+			item.Embedding = vector
+			item.EmbeddingStatus = "ok"
+		}
+	}
+	if err := s.store.SaveKnowledge(item); err != nil {
+		_ = s.RecordEvent(models.Event{
+			ID:        models.NewID("event"),
+			RunID:     run.ID,
+			Type:      "knowledge.capture_failed",
+			Message:   err.Error(),
+			Timestamp: time.Now().UTC(),
+		})
+		return
+	}
+	_ = s.store.AppendAudit(models.AuditEntry{
+		ID:        models.NewID("audit"),
+		RunID:     run.ID,
+		Kind:      "knowledge_candidate_created",
+		Summary:   item.Title,
+		Payload:   map[string]any{"knowledge_id": item.ID, "status": item.Status, "embedding_status": item.EmbeddingStatus},
+		CreatedAt: time.Now().UTC(),
+	})
 }
 
 func isValidEnvVarName(value string) bool {
@@ -1479,6 +1699,7 @@ func buildGatewayConfigView(config models.GatewayConfig) models.GatewayConfigVie
 		CurrentPresetID: config.CurrentPresetID,
 		Presets:         append([]models.GatewayPreset(nil), config.Presets...),
 		RuntimeSettings: normalizeRuntimeSettings(config.RuntimeSettings),
+		EmbeddingModel:  strings.TrimSpace(config.EmbeddingModel),
 		UpdatedAt:       config.UpdatedAt,
 	}
 	if active, err := activeGatewayPreset(config); err == nil {
@@ -1492,6 +1713,7 @@ func cloneGatewayConfig(config models.GatewayConfig) models.GatewayConfig {
 	cloned := models.GatewayConfig{
 		CurrentPresetID: config.CurrentPresetID,
 		RuntimeSettings: normalizeRuntimeSettings(config.RuntimeSettings),
+		EmbeddingModel:  strings.TrimSpace(config.EmbeddingModel),
 		UpdatedAt:       config.UpdatedAt,
 		Presets:         make([]models.GatewayPreset, len(config.Presets)),
 	}
@@ -1504,8 +1726,15 @@ func validateGatewayConfig(next, previous models.GatewayConfig) (models.GatewayC
 	result := models.GatewayConfig{
 		CurrentPresetID: strings.TrimSpace(next.CurrentPresetID),
 		RuntimeSettings: normalizeRuntimeSettings(next.RuntimeSettings),
+		EmbeddingModel:  strings.TrimSpace(next.EmbeddingModel),
 		Presets:         make([]models.GatewayPreset, 0, len(next.Presets)),
 		UpdatedAt:       now,
+	}
+	if result.EmbeddingModel == "" {
+		result.EmbeddingModel = strings.TrimSpace(previous.EmbeddingModel)
+	}
+	if result.EmbeddingModel == "" {
+		result.EmbeddingModel = "text-embedding-3-small"
 	}
 	if len(next.Presets) == 0 {
 		return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("at least one gateway preset is required")
@@ -1593,6 +1822,9 @@ func normalizeRuntimeSettings(settings models.RuntimeSettings) models.RuntimeSet
 	}
 	if settings.ToolResultTailChars < 0 {
 		settings.ToolResultTailChars = defaults.ToolResultTailChars
+	}
+	if settings.SOPRetrievalLimit <= 0 {
+		settings.SOPRetrievalLimit = defaults.SOPRetrievalLimit
 	}
 	return settings
 }

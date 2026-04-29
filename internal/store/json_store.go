@@ -25,6 +25,7 @@ func NewJSONStore(root string) (*JSONStore, error) {
 		filepath.Join(root, "runs"),
 		filepath.Join(root, "approvals"),
 		filepath.Join(root, "automations"),
+		filepath.Join(root, "knowledge"),
 		filepath.Join(root, "events"),
 	}
 	for _, path := range paths {
@@ -73,6 +74,38 @@ func (s *JSONStore) SaveGatewayConfig(config models.GatewayConfig) error {
 	return os.WriteFile(path, bytes, 0o644)
 }
 
+func (s *JSONStore) GetOperatorProfile() (models.OperatorProfile, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var zero models.OperatorProfile
+	path := filepath.Join(s.root, "operator_profile.json")
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return zero, false, nil
+		}
+		return zero, false, fmt.Errorf("read %s: %w", path, err)
+	}
+	var item models.OperatorProfile
+	if err := json.Unmarshal(bytes, &item); err != nil {
+		return zero, false, fmt.Errorf("decode %s: %w", path, err)
+	}
+	return item, true, nil
+}
+
+func (s *JSONStore) SaveOperatorProfile(profile models.OperatorProfile) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := filepath.Join(s.root, "operator_profile.json")
+	bytes, err := json.MarshalIndent(profile, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal operator profile: %w", err)
+	}
+	return os.WriteFile(path, bytes, 0o644)
+}
+
 func (s *JSONStore) ListSessions() ([]models.Session, error) {
 	return listObjects[models.Session](s, "sessions")
 }
@@ -116,6 +149,16 @@ func (s *JSONStore) SaveAutomation(rule models.AutomationRule) error {
 }
 func (s *JSONStore) DeleteAutomation(id string) error {
 	return deleteObject(s, "automations", id)
+}
+
+func (s *JSONStore) ListKnowledge() ([]models.KnowledgeItem, error) {
+	return listObjects[models.KnowledgeItem](s, "knowledge")
+}
+func (s *JSONStore) GetKnowledge(id string) (models.KnowledgeItem, bool, error) {
+	return getObject[models.KnowledgeItem](s, "knowledge", id)
+}
+func (s *JSONStore) SaveKnowledge(item models.KnowledgeItem) error {
+	return saveObject(s, "knowledge", item.ID, item)
 }
 
 func (s *JSONStore) AppendEvent(event models.Event) error {

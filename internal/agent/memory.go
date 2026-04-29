@@ -51,6 +51,9 @@ func normalizeRuntimeSettings(settings models.RuntimeSettings) models.RuntimeSet
 	if settings.ToolResultTailChars < 0 {
 		settings.ToolResultTailChars = defaults.ToolResultTailChars
 	}
+	if settings.SOPRetrievalLimit <= 0 {
+		settings.SOPRetrievalLimit = defaults.SOPRetrievalLimit
+	}
 	return settings
 }
 

@@ -60,6 +60,9 @@ func (m *Manager) WaitBatch(ctx context.Context, runID string, items []BatchRequ
 			ToolCallID:       item.ToolCall.ID,
 			BatchIndex:       index,
 			ToolName:         item.Preview.ToolName,
+			RuleID:           item.Rule.RuleID,
+			RuleSeverity:     item.Rule.Severity,
+			RuleCategory:     item.Rule.Category,
 			Reason:           item.Rule.Reason,
 			Scope:            firstNonEmpty(item.Preview.CommandPreview, item.Rule.Scope, item.Preview.ToolName),
 			SaferAlternative: item.Rule.SaferAlternative,
@@ -76,7 +79,7 @@ func (m *Manager) WaitBatch(ctx context.Context, runID string, items []BatchRequ
 				RunID:     runID,
 				Type:      "run.policy_override_requested",
 				Message:   item.Rule.Reason,
-				Payload:   map[string]any{"approval_id": approval.ID, "tool_name": approval.ToolName},
+				Payload:   map[string]any{"approval_id": approval.ID, "tool_name": approval.ToolName, "rule_id": item.Rule.RuleID, "severity": item.Rule.Severity},
 				Timestamp: now,
 			})
 		}

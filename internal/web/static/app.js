@@ -44,6 +44,7 @@ const LIVE_RENDER_EVENT_TYPES = new Set([
 const state = {
   health: null,
   gatewaySettings: null,
+  operatorProfile: null,
   hosts: [],
   runs: [],
   approvals: [],
@@ -190,6 +191,7 @@ function runtimeSettingsWithDefaults() {
     tool_result_max_chars: 6000,
     tool_result_head_chars: 4000,
     tool_result_tail_chars: 1200,
+    sop_retrieval_limit: 3,
     ...runtimeSettings(),
   };
 }
@@ -302,9 +304,10 @@ function syncSelectedHost() {
 }
 
 async function loadCore() {
-  const [health, gatewaySettings, hosts, runs, approvals, sessions, automations] = await Promise.all([
+  const [health, gatewaySettings, operatorProfile, hosts, runs, approvals, sessions, automations] = await Promise.all([
     request("/api/health"),
     request("/api/settings/gateway"),
+    request("/api/settings/operator"),
     request("/api/hosts"),
     request("/api/runs"),
     request("/api/approvals"),
@@ -313,6 +316,7 @@ async function loadCore() {
   ]);
   state.health = health;
   state.gatewaySettings = gatewaySettings;
+  state.operatorProfile = operatorProfile;
   state.hosts = sortByNewest(hosts.items || [], "updated_at");
   state.runs = sortByNewest(runs.items || [], "updated_at");
   state.approvals = sortByNewest(approvals.items || [], "created_at");
@@ -1558,6 +1562,7 @@ function renderSettings() {
   const presetNameInput = document.getElementById("settings-preset-name-input");
   const presetModelInput = document.getElementById("settings-preset-model-input");
   const presetBaseURLInput = document.getElementById("settings-preset-base-url-input");
+  const embeddingModelInput = document.getElementById("settings-embedding-model-input");
   const presetAPIKeyInput = document.getElementById("settings-preset-api-key-input");
   const presetActiveInput = document.getElementById("settings-preset-active-input");
   const maxAgentStepsInput = document.getElementById("settings-max-agent-steps-input");
@@ -1571,10 +1576,20 @@ function renderSettings() {
   const toolResultMaxCharsInput = document.getElementById("settings-tool-result-max-chars-input");
   const toolResultHeadCharsInput = document.getElementById("settings-tool-result-head-chars-input");
   const toolResultTailCharsInput = document.getElementById("settings-tool-result-tail-chars-input");
+  const sopRetrievalLimitInput = document.getElementById("settings-sop-retrieval-limit-input");
+  const operatorForm = document.getElementById("settings-operator-form");
+  const operatorStrictnessInput = document.getElementById("settings-operator-strictness-input");
+  const operatorReadOnlyInput = document.getElementById("settings-operator-readonly-input");
+  const operatorForceInput = document.getElementById("settings-operator-force-input");
+  const operatorBypassInput = document.getElementById("settings-operator-bypass-input");
+  const operatorPlaintextSSHInput = document.getElementById("settings-operator-plaintext-ssh-input");
+  const operatorAutomationBypassInput = document.getElementById("settings-operator-automation-bypass-input");
+  const operatorRemoteValidationInput = document.getElementById("settings-operator-remote-validation-input");
+  const operatorMessage = document.getElementById("settings-operator-message");
   const activateButton = document.getElementById("settings-activate-preset");
   const deleteButton = document.getElementById("settings-delete-preset");
   const addButton = document.getElementById("settings-add-preset");
-  if (!presetIDInput || !presetNameInput || !presetModelInput || !presetBaseURLInput || !presetAPIKeyInput || !presetActiveInput || !maxAgentStepsInput || !bypassApprovalsInput || !contextSoftLimitInput || !compressionTriggerInput || !responseReserveInput || !recentFullTurnsInput || !olderUserLedgerInput || !hostProfileTTLInput || !toolResultMaxCharsInput || !toolResultHeadCharsInput || !toolResultTailCharsInput || !activateButton || !deleteButton || !addButton) {
+  if (!presetIDInput || !presetNameInput || !presetModelInput || !presetBaseURLInput || !embeddingModelInput || !presetAPIKeyInput || !presetActiveInput || !maxAgentStepsInput || !bypassApprovalsInput || !contextSoftLimitInput || !compressionTriggerInput || !responseReserveInput || !recentFullTurnsInput || !olderUserLedgerInput || !hostProfileTTLInput || !toolResultMaxCharsInput || !toolResultHeadCharsInput || !toolResultTailCharsInput || !sopRetrievalLimitInput || !operatorForm || !operatorStrictnessInput || !operatorReadOnlyInput || !operatorForceInput || !operatorBypassInput || !operatorPlaintextSSHInput || !operatorAutomationBypassInput || !operatorRemoteValidationInput || !operatorMessage || !activateButton || !deleteButton || !addButton) {
     return;
   }
 
@@ -1584,6 +1599,7 @@ function renderSettings() {
   presetNameInput.value = effectivePreset.name || "";
   presetModelInput.value = effectivePreset.model || "";
   presetBaseURLInput.value = effectivePreset.base_url || "";
+  embeddingModelInput.value = state.gatewaySettings?.embedding_model || state.health?.embedding_model || "text-embedding-3-small";
   presetAPIKeyInput.value = effectivePreset.api_key || "";
   presetActiveInput.checked = effectivePreset.id ? effectivePreset.id === currentGatewayPresetId() : true;
   maxAgentStepsInput.value = currentRuntime.max_agent_steps;
@@ -1597,6 +1613,15 @@ function renderSettings() {
   toolResultMaxCharsInput.value = currentRuntime.tool_result_max_chars;
   toolResultHeadCharsInput.value = currentRuntime.tool_result_head_chars;
   toolResultTailCharsInput.value = currentRuntime.tool_result_tail_chars;
+  sopRetrievalLimitInput.value = currentRuntime.sop_retrieval_limit;
+  const operator = state.operatorProfile || {};
+  operatorStrictnessInput.value = operator.approval_strictness || "standard";
+  operatorReadOnlyInput.checked = Boolean(operator.prefer_read_only_first ?? true);
+  operatorForceInput.checked = Boolean(operator.allow_force_approve ?? true);
+  operatorBypassInput.checked = Boolean(operator.allow_bypass_approvals);
+  operatorPlaintextSSHInput.checked = Boolean(operator.allow_plaintext_ssh_warning ?? true);
+  operatorAutomationBypassInput.checked = Boolean(operator.allow_automation_bypass);
+  operatorRemoteValidationInput.checked = Boolean(operator.remote_validation_required ?? true);
   activateButton.disabled = !effectivePreset.id || effectivePreset.id === currentGatewayPresetId();
   deleteButton.disabled = !effectivePreset.id || presets.length <= 1;
   message.textContent = "保存后的配置会持久化到本地数据目录，并同步更新运行中的 API Gateway Pro。";
@@ -1628,7 +1653,9 @@ function renderSettings() {
           tool_result_max_chars: Number(toolResultMaxCharsInput.value || 0),
           tool_result_head_chars: Number(toolResultHeadCharsInput.value || 0),
           tool_result_tail_chars: Number(toolResultTailCharsInput.value || 0),
+          sop_retrieval_limit: Number(sopRetrievalLimitInput.value || 0),
         };
+        next.embedding_model = embeddingModelInput.value.trim();
         const existingIndex = (next.presets || []).findIndex((item) => item.id === id);
         if (existingIndex >= 0) {
           next.presets[existingIndex] = { ...next.presets[existingIndex], ...payload };
@@ -1722,8 +1749,35 @@ function renderSettings() {
       toolResultMaxCharsInput.value = defaults.tool_result_max_chars;
       toolResultHeadCharsInput.value = defaults.tool_result_head_chars;
       toolResultTailCharsInput.value = defaults.tool_result_tail_chars;
+      sopRetrievalLimitInput.value = defaults.sop_retrieval_limit;
       message.textContent = "填写新预设后点击保存即可。";
       presetNameInput.focus();
+    });
+  }
+
+  if (!operatorForm.dataset.bound) {
+    operatorForm.dataset.bound = "true";
+    operatorForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        operatorMessage.textContent = "正在保存操作员偏好...";
+        state.operatorProfile = await request("/api/settings/operator", {
+          method: "PUT",
+          body: JSON.stringify({
+            id: "default",
+            approval_strictness: operatorStrictnessInput.value,
+            allow_bypass_approvals: operatorBypassInput.checked,
+            allow_force_approve: operatorForceInput.checked,
+            allow_plaintext_ssh_warning: operatorPlaintextSSHInput.checked,
+            allow_automation_bypass: operatorAutomationBypassInput.checked,
+            prefer_read_only_first: operatorReadOnlyInput.checked,
+            remote_validation_required: operatorRemoteValidationInput.checked,
+          }),
+        });
+        operatorMessage.textContent = "操作员偏好已保存。";
+      } catch (error) {
+        operatorMessage.textContent = `保存失败：${error.message}`;
+      }
     });
   }
 

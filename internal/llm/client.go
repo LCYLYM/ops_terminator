@@ -34,6 +34,17 @@ type chatCompletionRequest struct {
 	Temperature       float64                 `json:"temperature,omitempty"`
 }
 
+type embeddingRequest struct {
+	Model string `json:"model"`
+	Input string `json:"input"`
+}
+
+type embeddingResponse struct {
+	Data []struct {
+		Embedding []float64 `json:"embedding"`
+	} `json:"data"`
+}
+
 type streamChunk struct {
 	ID      string         `json:"id"`
 	Model   string         `json:"model"`
@@ -218,6 +229,40 @@ func (c *Client) StreamChatCompletion(ctx context.Context, messages []models.Cha
 	return result, nil
 }
 
+func (c *Client) EmbedText(ctx context.Context, input, model string) ([]float64, error) {
+	baseURL, apiKey, _ := c.SnapshotConfig()
+	requestBody := embeddingRequest{
+		Model: strings.TrimSpace(model),
+		Input: input,
+	}
+	body, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal embedding request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, embeddingsURL(baseURL), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build embedding request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("send embedding request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, c.readAPIError(resp)
+	}
+	var parsed embeddingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("decode embedding response: %w", err)
+	}
+	if len(parsed.Data) == 0 || len(parsed.Data[0].Embedding) == 0 {
+		return nil, fmt.Errorf("embedding response did not include a vector")
+	}
+	return parsed.Data[0].Embedding, nil
+}
+
 func chatCompletionsURL(baseURL string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	switch {
@@ -227,6 +272,20 @@ func chatCompletionsURL(baseURL string) string {
 		return trimmed + "/chat/completions"
 	default:
 		return trimmed + "/v1/chat/completions"
+	}
+}
+
+func embeddingsURL(baseURL string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	switch {
+	case strings.HasSuffix(trimmed, "/v1/embeddings"):
+		return trimmed
+	case strings.HasSuffix(trimmed, "/v1/chat/completions"):
+		return strings.TrimSuffix(trimmed, "/chat/completions") + "/embeddings"
+	case strings.HasSuffix(trimmed, "/v1"):
+		return trimmed + "/embeddings"
+	default:
+		return trimmed + "/v1/embeddings"
 	}
 }
 

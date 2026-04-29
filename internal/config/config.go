@@ -20,6 +20,7 @@ type Config struct {
 	BaseURL               string
 	APIKey                string
 	Model                 string
+	EmbeddingModel        string
 	RequestTimeoutSeconds int
 	RunTimeoutSeconds     int
 	KnownHostsPath        string
@@ -36,7 +37,8 @@ func Load(workspaceRoot string) (Config, error) {
 		ServerAddr:            envOrDefault("OSAGENT_SERVER_ADDR", ":7778"),
 		BaseURL:               envOrDefault("OSAGENT_LLM_BASE_URL", "https://api.hbyzn.cn"),
 		APIKey:                strings.TrimSpace(os.Getenv("OSAGENT_LLM_API_KEY")),
-		Model:                 envOrDefault("OSAGENT_LLM_MODEL", "qwen3.5-plus-2026-02-15"),
+		Model:                 envOrDefault("OSAGENT_LLM_MODEL", "qwen3.6-plus"),
+		EmbeddingModel:        envOrDefault("OSAGENT_EMBEDDING_MODEL", "text-embedding-3-small"),
 		RequestTimeoutSeconds: envIntOrDefault("OSAGENT_REQUEST_TIMEOUT_SECONDS", 120),
 		RunTimeoutSeconds:     envIntOrDefault("OSAGENT_RUN_TIMEOUT_SECONDS", 180),
 		KnownHostsPath:        strings.TrimSpace(os.Getenv("OSAGENT_KNOWN_HOSTS")),
@@ -61,6 +63,7 @@ func (c Config) DefaultGatewayConfig() models.GatewayConfig {
 	return models.GatewayConfig{
 		CurrentPresetID: "default",
 		RuntimeSettings: models.DefaultRuntimeSettings(),
+		EmbeddingModel:  strings.TrimSpace(c.EmbeddingModel),
 		UpdatedAt:       now,
 		Presets: []models.GatewayPreset{
 			{

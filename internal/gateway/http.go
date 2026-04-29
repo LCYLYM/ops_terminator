@@ -13,6 +13,8 @@ import (
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/settings/gateway", s.handleGatewaySettings)
+	mux.HandleFunc("/api/settings/operator", s.handleOperatorSettings)
+	mux.HandleFunc("/api/knowledge", s.handleKnowledge)
 	mux.HandleFunc("/api/hosts", s.handleHosts)
 	mux.HandleFunc("/api/automations", s.handleAutomations)
 	mux.HandleFunc("/api/automations/", s.handleAutomationRoutes)
@@ -50,6 +52,58 @@ func (s *Service) handleGatewaySettings(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeJSON(w, http.StatusOK, updated)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) handleOperatorSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		profile, err := s.OperatorProfile()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, profile)
+	case http.MethodPut:
+		var request models.OperatorProfile
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		updated, err := s.UpdateOperatorProfile(request, "api")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, updated)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) handleKnowledge(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		items, err := s.ListKnowledge()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	case http.MethodPost:
+		var item models.KnowledgeItem
+		if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		saved, err := s.SaveKnowledge(item)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, saved)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
