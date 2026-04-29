@@ -128,8 +128,16 @@ func TestGatewayConfigViewMasksAPIKeyAndPreservesBlankUpdate(t *testing.T) {
 		t.Fatalf("expected masked api key in view: %+v", view.Presets[0])
 	}
 
-	next := previous
-	next.Presets[0].APIKey = ""
+	next := models.GatewayConfig{
+		CurrentPresetID: previous.CurrentPresetID,
+		RuntimeSettings: previous.RuntimeSettings,
+		Presets: []models.GatewayPreset{{
+			ID:      previous.Presets[0].ID,
+			Name:    previous.Presets[0].Name,
+			BaseURL: previous.Presets[0].BaseURL,
+			Model:   previous.Presets[0].Model,
+		}},
+	}
 	validated, active, err := validateGatewayConfig(next, previous)
 	if err != nil {
 		t.Fatalf("validate gateway config: %v", err)
