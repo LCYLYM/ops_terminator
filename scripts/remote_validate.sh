@@ -79,7 +79,7 @@ WorkingDirectory=${REMOTE_DIR}
 EnvironmentFile=${REMOTE_DIR}/.env
 Environment=LANG=C
 Environment=LC_ALL=C
-ExecStart=$(command -v go) run ./cmd/osagent serve
+ExecStart=\$(command -v go) run ./cmd/osagent serve
 Restart=on-failure
 RestartSec=3
 
