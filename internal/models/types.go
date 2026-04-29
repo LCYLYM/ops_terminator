@@ -532,13 +532,14 @@ type SessionDetail struct {
 }
 
 type GatewayPreset struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	BaseURL   string    `json:"base_url"`
-	APIKey    string    `json:"api_key"`
-	Model     string    `json:"model"`
-	CreatedAt time.Time `json:"created_at,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	BaseURL          string    `json:"base_url"`
+	APIKey           string    `json:"api_key"`
+	APIKeyConfigured bool      `json:"api_key_configured,omitempty"`
+	Model            string    `json:"model"`
+	CreatedAt        time.Time `json:"created_at,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"`
 }
 
 type GatewayConfig struct {

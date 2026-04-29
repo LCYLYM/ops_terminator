@@ -108,6 +108,37 @@ func TestValidateGatewayConfigPreservesBypassApprovals(t *testing.T) {
 	}
 }
 
+func TestGatewayConfigViewMasksAPIKeyAndPreservesBlankUpdate(t *testing.T) {
+	now := time.Now().UTC()
+	previous := models.GatewayConfig{
+		CurrentPresetID: "default",
+		RuntimeSettings: models.DefaultRuntimeSettings(),
+		Presets: []models.GatewayPreset{{
+			ID:        "default",
+			Name:      "Default",
+			BaseURL:   "https://api.example.com",
+			APIKey:    "sk-secret",
+			Model:     "test-model",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+	}
+	view := buildGatewayConfigView(previous)
+	if view.Presets[0].APIKey != "" || !view.Presets[0].APIKeyConfigured {
+		t.Fatalf("expected masked api key in view: %+v", view.Presets[0])
+	}
+
+	next := previous
+	next.Presets[0].APIKey = ""
+	validated, active, err := validateGatewayConfig(next, previous)
+	if err != nil {
+		t.Fatalf("validate gateway config: %v", err)
+	}
+	if validated.Presets[0].APIKey != "sk-secret" || active.APIKey != "sk-secret" {
+		t.Fatalf("expected blank update to preserve previous key: %+v active=%+v", validated.Presets[0], active)
+	}
+}
+
 func TestOperatorProfileDefaultsAndAudit(t *testing.T) {
 	storeImpl, err := store.NewJSONStore(t.TempDir())
 	if err != nil {

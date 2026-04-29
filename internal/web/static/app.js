@@ -233,6 +233,11 @@ function maskSecret(value) {
   return `${text.slice(0, 4)}***${text.slice(-4)}`;
 }
 
+function presetKeyLabel(preset) {
+  if (preset?.api_key_configured) return "已配置";
+  return maskSecret(preset?.api_key);
+}
+
 function slugifyPresetName(value) {
   const normalized = String(value || "")
     .trim()
@@ -1796,7 +1801,7 @@ function renderSettings() {
         ${isCurrent ? '<span class="rounded-full bg-[#F5E7E0] px-2 py-0.5 text-[11px] text-[#C96442]">当前</span>' : ""}
       </div>
       <div class="mt-3 text-xs text-secondary break-all">${escapeHTML(preset.base_url)}</div>
-      <div class="mt-2 text-[11px] text-secondary">Key: ${escapeHTML(maskSecret(preset.api_key))}</div>
+      <div class="mt-2 text-[11px] text-secondary">Key: ${escapeHTML(presetKeyLabel(preset))}</div>
     `;
     item.addEventListener("click", () => {
       state.settingsSelectedPresetId = preset.id;
@@ -1854,7 +1859,8 @@ function renderSettings() {
   presetModelInput.value = effectivePreset.model || "";
   presetBaseURLInput.value = effectivePreset.base_url || "";
   embeddingModelInput.value = state.gatewaySettings?.embedding_model || state.health?.embedding_model || "text-embedding-3-small";
-  presetAPIKeyInput.value = effectivePreset.api_key || "";
+  presetAPIKeyInput.value = "";
+  presetAPIKeyInput.placeholder = effectivePreset.api_key_configured ? "留空表示保留当前 API key；填写新 key 才会替换" : "sk-...";
   presetActiveInput.checked = effectivePreset.id ? effectivePreset.id === currentGatewayPresetId() : true;
   maxAgentStepsInput.value = currentRuntime.max_agent_steps;
   bypassApprovalsInput.checked = Boolean(currentRuntime.bypass_approvals);
@@ -1990,6 +1996,7 @@ function renderSettings() {
       presetModelInput.value = "";
       presetBaseURLInput.value = state.health?.base_url || "https://api.longcat.chat";
       presetAPIKeyInput.value = "";
+      presetAPIKeyInput.placeholder = "sk-...";
       presetActiveInput.checked = true;
       const defaults = runtimeSettingsWithDefaults();
       maxAgentStepsInput.value = defaults.max_agent_steps;

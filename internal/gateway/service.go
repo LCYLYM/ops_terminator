@@ -1859,15 +1859,22 @@ func activeGatewayPreset(config models.GatewayConfig) (models.GatewayPreset, err
 }
 
 func buildGatewayConfigView(config models.GatewayConfig) models.GatewayConfigView {
+	presets := append([]models.GatewayPreset(nil), config.Presets...)
+	for i := range presets {
+		presets[i].APIKeyConfigured = strings.TrimSpace(presets[i].APIKey) != ""
+		presets[i].APIKey = ""
+	}
 	view := models.GatewayConfigView{
 		CurrentPresetID: config.CurrentPresetID,
-		Presets:         append([]models.GatewayPreset(nil), config.Presets...),
+		Presets:         presets,
 		RuntimeSettings: normalizeRuntimeSettings(config.RuntimeSettings),
 		EmbeddingModel:  strings.TrimSpace(config.EmbeddingModel),
 		UpdatedAt:       config.UpdatedAt,
 	}
 	if active, err := activeGatewayPreset(config); err == nil {
 		copyPreset := active
+		copyPreset.APIKeyConfigured = strings.TrimSpace(copyPreset.APIKey) != ""
+		copyPreset.APIKey = ""
 		view.CurrentPreset = &copyPreset
 	}
 	return view
@@ -1929,14 +1936,17 @@ func validateGatewayConfig(next, previous models.GatewayConfig) (models.GatewayC
 		if preset.BaseURL == "" {
 			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("gateway preset %q base_url is required", preset.Name)
 		}
-		if preset.APIKey == "" {
-			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("gateway preset %q api_key is required", preset.Name)
-		}
 		if preset.Model == "" {
 			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("gateway preset %q model is required", preset.Name)
 		}
 		if previousPreset, ok := previousByID[preset.ID]; ok {
 			preset.CreatedAt = previousPreset.CreatedAt
+			if preset.APIKey == "" {
+				preset.APIKey = previousPreset.APIKey
+			}
+		}
+		if preset.APIKey == "" {
+			return models.GatewayConfig{}, models.GatewayPreset{}, fmt.Errorf("gateway preset %q api_key is required", preset.Name)
 		}
 		if preset.CreatedAt.IsZero() {
 			preset.CreatedAt = now
